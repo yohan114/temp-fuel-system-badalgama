@@ -411,7 +411,7 @@ export async function workshopIssueFuelAction(formData: FormData) {
       // Check 20-hour access bypass for June 1st and June 2nd, 2026
       const parsedDate = issueDateStr ? new Date(issueDateStr) : null;
       const nowTime = new Date();
-      const bypassExpiry = new Date("2026-06-19T10:04:11.000Z");
+      const bypassExpiry = new Date("2026-07-10T10:04:11.000Z");
       const isBypassActive = parsedDate && nowTime < bypassExpiry && (parsedDate.getFullYear() === 2026 && parsedDate.getMonth() === 5 && (parsedDate.getDate() === 1 || parsedDate.getDate() === 2));
 
       if (reason !== "Vehicle Breakdown" && reason !== "Active Night Work" && !isBypassActive) {
@@ -450,7 +450,7 @@ export async function workshopIssueFuelAction(formData: FormData) {
 
     // 20-hour access bypass for June 1st and June 2nd, 2026
     const nowTime = new Date();
-    const bypassExpiry = new Date("2026-06-19T10:04:11.000Z");
+    const bypassExpiry = new Date("2026-07-10T10:04:11.000Z");
     const isBypassActive = nowTime < bypassExpiry && (parsedDate.getFullYear() === 2026 && parsedDate.getMonth() === 5 && (parsedDate.getDate() === 1 || parsedDate.getDate() === 2));
 
     if (diffDays > 14 && !isBypassActive) {

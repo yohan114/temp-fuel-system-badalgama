@@ -321,7 +321,7 @@ export async function recordDirectIssueAction(formData: FormData) {
     
     // 20-hour access bypass for June 1st and June 2nd, 2026
     const nowTime = new Date();
-    const bypassExpiry = new Date("2026-06-19T10:04:11.000Z");
+    const bypassExpiry = new Date("2026-07-10T10:04:11.000Z");
     const isBypassActive = nowTime < bypassExpiry && (issueDatePart === "2026-06-01" || issueDatePart === "2026-06-02");
 
     if (issueDatePart !== colomboTodayStr && !isBypassActive) {
@@ -341,7 +341,7 @@ export async function recordDirectIssueAction(formData: FormData) {
     );
     
     const nowTime = new Date();
-    const bypassExpiry = new Date("2026-06-19T10:04:11.000Z");
+    const bypassExpiry = new Date("2026-07-10T10:04:11.000Z");
     const issueDatePart = dateStr.split("T")[0];
     const isBypassActive = nowTime < bypassExpiry && (issueDatePart === "2026-06-01" || issueDatePart === "2026-06-02");
 

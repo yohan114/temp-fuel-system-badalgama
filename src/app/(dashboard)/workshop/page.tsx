@@ -87,7 +87,7 @@ export default async function WorkshopPage() {
 
   // 20-hour access bypass for June 1st and June 2nd, 2026
   const nowTime = new Date();
-  const bypassExpiry = new Date("2026-06-19T10:04:11.000Z");
+  const bypassExpiry = new Date("2026-07-10T10:04:11.000Z");
   if (nowTime < bypassExpiry) {
     minDateStr = "2026-06-01";
   }
