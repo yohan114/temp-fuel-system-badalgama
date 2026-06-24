@@ -83,7 +83,14 @@ export default async function WorkshopPage() {
     
   const colomboMidnight = new Date(colomboYear, colomboMonth - 1, colomboDay);
   const minDate = new Date(colomboMidnight.getTime() - 14 * 24 * 60 * 60 * 1000);
-  const minDateStr = minDate.toLocaleDateString("en-CA", { timeZone: "Asia/Colombo" });
+  let minDateStr = minDate.toLocaleDateString("en-CA", { timeZone: "Asia/Colombo" });
+
+  // 20-hour access bypass for June 1st and June 2nd, 2026
+  const nowTime = new Date();
+  const bypassExpiry = new Date("2026-06-19T10:04:11.000Z");
+  if (nowTime < bypassExpiry) {
+    minDateStr = "2026-06-01";
+  }
 
   return (
     <WorkshopConsole

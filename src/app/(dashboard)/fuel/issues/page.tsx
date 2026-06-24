@@ -1,8 +1,7 @@
 import React from "react";
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/auth";
-import Link from "next/link";
-import { Search, Fuel, Coins, Calendar, User, CornerDownRight } from "lucide-react";
+import FuelIssuesClient from "./FuelIssuesClient";
 
 interface PageProps {
   searchParams: Promise<{ q?: string; fuelKind?: string }>;
@@ -47,15 +46,7 @@ export default async function FuelIssuesPage(props: PageProps) {
     },
   });
 
-
-
-  // 3. Compute sums
-  let totalLitres = 0;
-  let totalCostCents = 0;
-  issues.forEach((issue) => {
-    totalLitres += issue.litres;
-    totalCostCents += issue.totalCost;
-  });
+  const isAdmin = session.role === "ADMIN";
 
   return (
     <div className="space-y-6">
@@ -67,134 +58,13 @@ export default async function FuelIssuesPage(props: PageProps) {
         </p>
       </div>
 
-      {/* Filter and Summary Panel */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Filters Form */}
-        <div className="lg:col-span-2 bg-[#121420] border border-white/5 rounded-2xl p-5 shadow-lg flex items-center">
-          <form method="GET" action="/fuel/issues" className="w-full grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {/* Search by asset */}
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-              <input
-                type="text"
-                name="q"
-                defaultValue={q}
-                placeholder="Search asset e.g. DT-01"
-                className="w-full bg-[#1b1e30] border border-white/5 rounded-xl pl-10 pr-3 py-2.5 text-white placeholder-gray-500 text-xs focus:outline-none"
-              />
-            </div>
-
-            {/* Fuel Kind dropdown */}
-            <div>
-              <select
-                name="fuelKind"
-                defaultValue={fuelKindFilter}
-                className="w-full bg-[#1b1e30] border border-white/5 rounded-xl px-3 py-2.5 text-white text-xs focus:outline-none"
-              >
-                <option value="">All Fuel Kinds</option>
-                <option value="AUTO_DIESEL">Auto Diesel</option>
-                <option value="SUPER_DIESEL">Super Diesel</option>
-              </select>
-            </div>
-
-            {/* Actions */}
-            <div className="flex gap-2">
-              <button
-                type="submit"
-                className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs rounded-xl py-2.5 active:scale-95 transition-all shadow-md"
-              >
-                Filter Log
-              </button>
-              <Link
-                href="/fuel/issues"
-                className="px-3 bg-white/5 hover:bg-white/10 text-gray-300 rounded-xl text-xs font-semibold flex items-center justify-center border border-white/5 active:scale-95 transition-all"
-              >
-                Clear
-              </Link>
-            </div>
-          </form>
-        </div>
-
-        {/* Aggregated totals info */}
-        <div className="bg-[#121420] border border-white/5 rounded-2xl p-5 shadow-lg flex items-center justify-between text-xs">
-          <div>
-            <span className="text-gray-400 font-semibold block uppercase tracking-wider text-[10px]">Filter Sum</span>
-            <span className="text-white block mt-1 font-bold text-base">
-              {totalLitres.toLocaleString("en-US", { maximumFractionDigits: 1 })} L
-            </span>
-            <span className="text-[10px] text-gray-500 block">Total volume matching filters</span>
-          </div>
-          <div className="text-right">
-            <span className="text-gray-400 font-semibold block uppercase tracking-wider text-[10px]">Total Cost</span>
-            <span className="text-indigo-400 block mt-1 font-bold text-base">
-              Rs. {(totalCostCents / 100).toLocaleString("en-LK", { maximumFractionDigits: 0 })}
-            </span>
-            <span className="text-[10px] text-gray-500 block">Total cost in LKR</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Dispatches List */}
-      {issues.length === 0 ? (
-        <div className="bg-[#121420] border border-white/5 rounded-2xl py-16 text-center text-xs text-gray-500">
-          No dispatches found matching filters.
-        </div>
-      ) : (
-        <div className="bg-[#121420] border border-white/5 rounded-2xl overflow-hidden shadow-xl">
-          {/* Table */}
-          <table className="w-full border-collapse text-left text-xs">
-            <thead>
-              <tr className="bg-white/5 text-gray-400 border-b border-white/5">
-                <th className="px-6 py-4 font-semibold">Date</th>
-                <th className="px-6 py-4 font-semibold">Asset Code</th>
-                <th className="px-6 py-4 font-semibold">Fuel Kind</th>
-                <th className="px-6 py-4 font-semibold">Volume</th>
-                <th className="px-6 py-4 font-semibold">Pump Price</th>
-                <th className="px-6 py-4 font-semibold">Total Cost</th>
-                <th className="px-6 py-4 font-semibold">Issued By</th>
-                <th className="px-6 py-4 font-semibold">Source</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
-              {issues.map((issue) => (
-                <tr key={issue.id} className="hover:bg-white/[0.02] transition-colors">
-                  <td className="px-6 py-4 text-gray-300 font-medium whitespace-nowrap">
-                    {new Date(issue.issueDate).toLocaleString("en-US", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
-                  </td>
-                  <td className="px-6 py-4">
-                    <Link
-                      href={`/fleet/${issue.asset.code}`}
-                      className="font-bold text-white hover:text-indigo-400 tracking-wide transition-colors"
-                    >
-                      {issue.asset.code}
-                    </Link>
-                  </td>
-                  <td className="px-6 py-4 text-gray-400 capitalize">
-                    {issue.fuelKind.replace("_", " ").toLowerCase()}
-                  </td>
-                  <td className="px-6 py-4 text-white font-bold whitespace-nowrap">
-                    {issue.litres.toFixed(1)} L
-                  </td>
-                  <td className="px-6 py-4 text-gray-400">
-                    Rs. {(issue.pricePerLitre / 100).toFixed(2)}
-                  </td>
-                  <td className="px-6 py-4 text-white font-bold whitespace-nowrap">
-                    Rs. {(issue.totalCost / 100).toLocaleString("en-LK", { minimumFractionDigits: 2 })}
-                  </td>
-                  <td className="px-6 py-4 text-gray-400">
-                    {issue.issuedBy.name}
-                  </td>
-                  <td className="px-6 py-4">
-                    <span className="bg-white/5 px-2 py-0.5 rounded text-[9px] uppercase font-bold text-gray-400 border border-white/5">
-                      {issue.source}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <FuelIssuesClient
+        initialIssues={issues as any}
+        isAdmin={isAdmin}
+        q={q}
+        fuelKindFilter={fuelKindFilter}
+      />
     </div>
   );
 }
+

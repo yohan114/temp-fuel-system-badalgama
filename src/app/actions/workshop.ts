@@ -408,7 +408,13 @@ export async function workshopIssueFuelAction(formData: FormData) {
       10
     );
     if (colomboHour < 8 || colomboHour >= 17) {
-      if (reason !== "Vehicle Breakdown" && reason !== "Active Night Work") {
+      // Check 20-hour access bypass for June 1st and June 2nd, 2026
+      const parsedDate = issueDateStr ? new Date(issueDateStr) : null;
+      const nowTime = new Date();
+      const bypassExpiry = new Date("2026-06-19T10:04:11.000Z");
+      const isBypassActive = parsedDate && nowTime < bypassExpiry && (parsedDate.getFullYear() === 2026 && parsedDate.getMonth() === 5 && (parsedDate.getDate() === 1 || parsedDate.getDate() === 2));
+
+      if (reason !== "Vehicle Breakdown" && reason !== "Active Night Work" && !isBypassActive) {
         return { error: "During locked hours (17:00 PM - 08:00 AM), fuel issues are only allowed for 'Vehicle Breakdown' or 'Active Night Work'. Please select a valid reason." };
       }
     }
@@ -441,7 +447,13 @@ export async function workshopIssueFuelAction(formData: FormData) {
     if (diffDays < 0) {
       return { error: "Selected date cannot be in the future." };
     }
-    if (diffDays > 14) {
+
+    // 20-hour access bypass for June 1st and June 2nd, 2026
+    const nowTime = new Date();
+    const bypassExpiry = new Date("2026-06-19T10:04:11.000Z");
+    const isBypassActive = nowTime < bypassExpiry && (parsedDate.getFullYear() === 2026 && parsedDate.getMonth() === 5 && (parsedDate.getDate() === 1 || parsedDate.getDate() === 2));
+
+    if (diffDays > 14 && !isBypassActive) {
       return { error: "Backdated dispatches are only allowed up to 14 days in the past." };
     }
 

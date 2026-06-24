@@ -318,7 +318,13 @@ export async function recordDirectIssueAction(formData: FormData) {
   if (process.env.TEST_ENV !== "true") {
     const colomboTodayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Colombo" });
     const issueDatePart = dateStr.split("T")[0];
-    if (issueDatePart !== colomboTodayStr) {
+    
+    // 20-hour access bypass for June 1st and June 2nd, 2026
+    const nowTime = new Date();
+    const bypassExpiry = new Date("2026-06-19T10:04:11.000Z");
+    const isBypassActive = nowTime < bypassExpiry && (issueDatePart === "2026-06-01" || issueDatePart === "2026-06-02");
+
+    if (issueDatePart !== colomboTodayStr && !isBypassActive) {
       return { error: "You can only log operations for the current day." };
     }
   }
@@ -333,7 +339,13 @@ export async function recordDirectIssueAction(formData: FormData) {
       }).format(new Date()),
       10
     );
-    if (colomboHour < 8 || colomboHour >= 17) {
+    
+    const nowTime = new Date();
+    const bypassExpiry = new Date("2026-06-19T10:04:11.000Z");
+    const issueDatePart = dateStr.split("T")[0];
+    const isBypassActive = nowTime < bypassExpiry && (issueDatePart === "2026-06-01" || issueDatePart === "2026-06-02");
+
+    if ((colomboHour < 8 || colomboHour >= 17) && !isBypassActive) {
       return { error: "Fuel operations are only allowed between 08:00 AM and 17:00 PM." };
     }
   }
@@ -456,3 +468,229 @@ export async function recordDirectIssueAction(formData: FormData) {
     return { error: err.message || "Failed to record fuel issue" };
   }
 }
+
+// 5. Edit Fuel Issue (Admin only)
+export async function editFuelIssueAction(issueId: string, formData: FormData) {
+  let admin;
+  try {
+    admin = await assertCan("manage");
+    if (admin.role !== "ADMIN") {
+      return { error: "You are not authorized to perform this action" };
+    }
+  } catch (err) {
+    return { error: "You are not authorized to perform this action" };
+  }
+
+  const assetCode = formData.get("assetCode")?.toString().trim();
+  const litresStr = formData.get("litres")?.toString();
+  const meterReadingStr = formData.get("meterReading")?.toString();
+  const dateStr = formData.get("issueDate")?.toString();
+  let fuelKind = formData.get("fuelKind")?.toString();
+  const source = formData.get("source")?.toString() || "STATION";
+
+  if (!issueId || !assetCode || !litresStr || !dateStr) {
+    return { error: "Please fill in all required fields" };
+  }
+
+  const litres = parseFloat(litresStr);
+  const meterReading = meterReadingStr && meterReadingStr.trim() !== "" ? parseFloat(meterReadingStr) : null;
+  const issueDate = new Date(dateStr);
+
+  if (isNaN(litres) || litres <= 0) {
+    return { error: "Litres must be greater than zero" };
+  }
+
+  if (isNaN(issueDate.getTime())) {
+    return { error: "Invalid issue date" };
+  }
+
+  try {
+    // 1. Fetch the existing issue
+    const oldIssue = await prisma.fuelIssue.findUnique({
+      where: { id: issueId },
+      include: { asset: true, bulkTank: true },
+    });
+
+    if (!oldIssue) {
+      return { error: "Fuel issue not found" };
+    }
+
+    if (!fuelKind) {
+      fuelKind = oldIssue.fuelKind;
+    }
+
+    // 2. Resolve asset (create if it doesn't exist under OTHER category)
+    let asset = await prisma.asset.findFirst({
+      where: {
+        OR: [
+          { code: assetCode.toUpperCase() },
+          { regNo: assetCode.toUpperCase() }
+        ]
+      }
+    });
+
+    if (!asset) {
+      const otherCategory = await prisma.category.findFirst({
+        where: { code: "OTHER" },
+      });
+      if (!otherCategory) {
+        return { error: "Fallback asset category 'OTHER' is missing from the database" };
+      }
+      asset = await prisma.asset.create({
+        data: {
+          code: assetCode.toUpperCase(),
+          categoryId: otherCategory.id,
+          meterType: "KM",
+          status: "ACTIVE",
+          brand: "Quick Added",
+          typeLabel: "Other Asset",
+        }
+      });
+    }
+
+    // Check meter reading positive value if supplied
+    if (meterReading !== null && (isNaN(meterReading) || meterReading < 0)) {
+      return { error: "Meter reading must be a positive number" };
+    }
+
+    // 3. Handle bulk tank adjustment if it is linked to a bulk tank
+    let bulkTankToUpdate: any = null;
+    let balanceChange = 0; // how much we add back to the tank balance
+
+    if (oldIssue.bulkTankId) {
+      const tank = await prisma.bulkTank.findUnique({
+        where: { id: oldIssue.bulkTankId },
+      });
+      if (!tank) {
+        return { error: "Linked bulk tank was not found" };
+      }
+
+      // Check if fuel kind matches the bulk tank
+      if (fuelKind !== tank.fuelKind) {
+        return { error: `Fuel kind cannot be changed for issue linked to bulk tank "${tank.name}" (${tank.fuelKind})` };
+      }
+
+      // Calculate how much fuel we are returning / taking extra
+      balanceChange = oldIssue.litres - litres;
+
+      // If we are drawing MORE fuel, check if the tank has enough balance
+      if (balanceChange < 0 && tank.balance < Math.abs(balanceChange)) {
+        return {
+          error: `Insufficient fuel in ${tank.name}. Available balance: ${tank.balance.toFixed(1)}L, additional requested: ${Math.abs(balanceChange).toFixed(1)}L.`
+        };
+      }
+
+      bulkTankToUpdate = tank;
+    }
+
+    // 4. Resolve the fuel price for the new date & fuel kind
+    const resolvedPrice = await getPriceForDate(fuelKind, issueDate);
+    const totalCost = Math.round(litres * resolvedPrice.pricePerLitre);
+
+    // 5. Update inside transaction
+    await prisma.$transaction(async (tx) => {
+      // Update bulk tank balance if needed
+      if (bulkTankToUpdate && balanceChange !== 0) {
+        await tx.bulkTank.update({
+          where: { id: bulkTankToUpdate.id },
+          data: {
+            balance: {
+              increment: balanceChange
+            }
+          }
+        });
+      }
+
+      // Update or create linked MeterReading record
+      let meterReadingRecordId = oldIssue.meterReadingRecordId;
+
+      if (meterReading !== null) {
+        if (meterReadingRecordId) {
+          // Update existing meter reading
+          await tx.meterReading.update({
+            where: { id: meterReadingRecordId },
+            data: {
+              value: meterReading,
+              readingType: asset.meterType, // use the (possibly updated) asset's meter type
+              readingDate: issueDate,
+              assetId: asset.id, // in case asset changed
+            }
+          });
+        } else {
+          // Create new meter reading record
+          const newReading = await tx.meterReading.create({
+            data: {
+              assetId: asset.id,
+              value: meterReading,
+              readingType: asset.meterType,
+              readingDate: issueDate,
+              source: "FUEL_ISSUE",
+              recordedById: admin.id,
+              linkedIssueId: oldIssue.id,
+            }
+          });
+          meterReadingRecordId = newReading.id;
+        }
+      } else {
+        // If they cleared the reading but there was one before, delete it
+        if (meterReadingRecordId) {
+          // Unlink first
+          await tx.fuelIssue.update({
+            where: { id: issueId },
+            data: {
+              meterReadingRecordId: null
+            }
+          });
+          // Delete
+          await tx.meterReading.delete({
+            where: { id: meterReadingRecordId }
+          });
+          meterReadingRecordId = null;
+        }
+      }
+
+      // Update FuelIssue
+      await tx.fuelIssue.update({
+        where: { id: issueId },
+        data: {
+          assetId: asset.id,
+          fuelKind,
+          litres,
+          meterReading,
+          readingType: asset.meterType,
+          pricePerLitre: resolvedPrice.pricePerLitre,
+          totalCost,
+          source,
+          issueDate,
+          fuelPriceId: resolvedPrice.id,
+          meterReadingRecordId,
+        }
+      });
+
+      // Write Audit Log
+      await tx.auditLog.create({
+        data: {
+          actorId: admin.id,
+          action: "UPDATE",
+          entity: "FuelIssue",
+          entityId: oldIssue.id,
+          summary: `Updated fuel issue ${oldIssue.id}: Asset changed from ${oldIssue.asset.code} to ${asset.code}, litres from ${oldIssue.litres}L to ${litres}L, date from ${oldIssue.issueDate.toISOString()} to ${issueDate.toISOString()}`,
+        }
+      });
+    });
+
+    revalidatePath("/");
+    revalidatePath("/fuel/issues");
+    revalidatePath(`/fleet/${oldIssue.asset.code}`);
+    revalidatePath(`/fleet/${asset.code}`);
+    if (oldIssue.bulkTankId) {
+      revalidatePath("/workshop");
+    }
+
+    return { success: true };
+  } catch (err: any) {
+    console.error("Edit fuel issue error:", err);
+    return { error: err.message || "Failed to update fuel issue" };
+  }
+}
+
