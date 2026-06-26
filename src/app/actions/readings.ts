@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/db";
 import { assertCan, isProjectScoped } from "@/lib/rbac";
+import { isOutsideOperatingWindow } from "@/lib/ops";
 import { revalidatePath } from "next/cache";
 
 export async function addReadingAction(formData: FormData) {
@@ -12,19 +13,9 @@ export async function addReadingAction(formData: FormData) {
     return { error: "You are not authorized to perform this action" };
   }
 
-  // Time Lock check
-  if (process.env.TEST_ENV !== "true") {
-    const colomboHour = parseInt(
-      new Intl.DateTimeFormat("en-US", {
-        timeZone: "Asia/Colombo",
-        hour: "numeric",
-        hour12: false,
-      }).format(new Date()),
-      10
-    );
-    if (colomboHour < 8 || colomboHour >= 17) {
-      return { error: "Fuel operations are only allowed between 08:00 AM and 17:00 PM." };
-    }
+  // Time Lock check (operating-hours window, admin-configurable)
+  if (await isOutsideOperatingWindow()) {
+    return { error: "Fuel operations are only allowed between 08:00 AM and 17:00 PM." };
   }
 
   const assetId = formData.get("assetId")?.toString();

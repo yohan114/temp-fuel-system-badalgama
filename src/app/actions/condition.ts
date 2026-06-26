@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/db";
 import { assertCan, isProjectScoped } from "@/lib/rbac";
+import { isOutsideOperatingWindow } from "@/lib/ops";
 import { revalidatePath } from "next/cache";
 
 export async function logDailyConditionAction(assetId: string, status: string, note: string | null = null) {
@@ -16,16 +17,8 @@ export async function logDailyConditionAction(assetId: string, status: string, n
     return { error: "Invalid status value. Must be WORKING or BREAKDOWN." };
   }
 
-  // Daily logging allowed only between 8:00 AM and 17:00 PM
-  const colomboHour = parseInt(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: "Asia/Colombo",
-      hour: "numeric",
-      hour12: false,
-    }).format(new Date()),
-    10
-  );
-  if (colomboHour < 8 || colomboHour >= 17) {
+  // Daily logging is restricted to the operating-hours window (admin-configurable)
+  if (await isOutsideOperatingWindow()) {
     return { error: "Condition logging is only allowed between 8:00 AM and 17:00 PM." };
   }
 

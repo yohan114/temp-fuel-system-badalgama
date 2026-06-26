@@ -1,6 +1,7 @@
 import React from "react";
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/auth";
+import { isTimeLockEnabled } from "@/lib/ops";
 import { redirect } from "next/navigation";
 import WorkshopConsole from "./WorkshopConsole";
 
@@ -81,7 +82,7 @@ export default async function WorkshopPage() {
     10
   );
   
-  const isLocked = colomboHour < 8 || colomboHour >= 17;
+  const isLocked = (await isTimeLockEnabled()) && (colomboHour < 8 || colomboHour >= 17);
   const lockMessage = isLocked
     ? (colomboHour < 8 ? "Closed (Opens at 08:00 AM)" : "Closed (Locked at 17:00 PM)")
     : "Open (Locks at 17:00 PM)";

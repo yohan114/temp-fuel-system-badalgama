@@ -423,3 +423,40 @@ export async function updateUserAssignmentAction(targetUserId: string, formData:
   }
 }
 
+// 7. Update Operations Settings (Admin only)
+export async function updateOpsSettingsAction(formData: FormData) {
+  let admin;
+  try {
+    admin = await assertCan("manage");
+  } catch (err) {
+    return { error: "You are not authorized to perform this action" };
+  }
+
+  const timeLockEnabled = formData.get("timeLockEnabled") === "true" ? "true" : "false";
+
+  try {
+    await prisma.setting.upsert({
+      where: { key: "ops.timeLockEnabled" },
+      update: { value: timeLockEnabled },
+      create: { key: "ops.timeLockEnabled", value: timeLockEnabled },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: admin.id,
+        action: "UPDATE",
+        entity: "Setting",
+        summary: `Updated operating-hours lock: ops.timeLockEnabled=${timeLockEnabled}`,
+      },
+    });
+
+    revalidatePath("/admin/settings");
+    revalidatePath("/workshop");
+    revalidatePath("/");
+    return { success: true };
+  } catch (err: any) {
+    console.error("Update ops settings error:", err);
+    return { error: err.message || "Failed to update operations settings" };
+  }
+}
+

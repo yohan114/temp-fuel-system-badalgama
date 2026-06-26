@@ -178,6 +178,7 @@ async function main() {
     { key: "scraper.cron", value: "0 0 1 * *" },
     { key: "backup.cron", value: "30 2 * * *" },
     { key: "backup.retentionDays", value: "7" },
+    { key: "ops.timeLockEnabled", value: "true" },
   ];
   for (const s of settingsDefaults) {
     await prisma.setting.upsert({

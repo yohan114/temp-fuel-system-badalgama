@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { assertCan } from "@/lib/rbac";
 import { revalidatePath } from "next/cache";
 import { getPriceForDate } from "@/lib/pricing";
+import { isOutsideOperatingWindow } from "@/lib/ops";
 
 // 1. Create Bulk Tank (Admin only)
 export async function createBulkTankAction(formData: FormData) {
@@ -142,19 +143,9 @@ export async function submitBulkRequestAction(formData: FormData) {
     return { error: "You are not authorized to perform this action" };
   }
 
-  // Time Lock check
-  if (process.env.TEST_ENV !== "true") {
-    const colomboHour = parseInt(
-      new Intl.DateTimeFormat("en-US", {
-        timeZone: "Asia/Colombo",
-        hour: "numeric",
-        hour12: false,
-      }).format(new Date()),
-      10
-    );
-    if (colomboHour < 8 || colomboHour >= 17) {
-      return { error: "Fuel operations are only allowed between 08:00 AM and 17:00 PM." };
-    }
+  // Time Lock check (operating-hours window, admin-configurable)
+  if (await isOutsideOperatingWindow()) {
+    return { error: "Fuel operations are only allowed between 08:00 AM and 17:00 PM." };
   }
 
   const bulkTankId = formData.get("bulkTankId")?.toString();
@@ -423,26 +414,17 @@ export async function workshopIssueFuelAction(formData: FormData) {
   const projectId = formData.get("projectId")?.toString() || null;
   const issueDateStr = formData.get("issueDate")?.toString() || null;
 
-  // Time Lock check
-  if (process.env.TEST_ENV !== "true") {
-    const colomboHour = parseInt(
-      new Intl.DateTimeFormat("en-US", {
-        timeZone: "Asia/Colombo",
-        hour: "numeric",
-        hour12: false,
-      }).format(new Date()),
-      10
-    );
-    if (colomboHour < 8 || colomboHour >= 17) {
-      // Check 20-hour access bypass for June 1st and June 2nd, 2026
-      const parsedDate = issueDateStr ? new Date(issueDateStr) : null;
-      const nowTime = new Date();
-      const bypassExpiry = new Date("2026-07-10T10:04:11.000Z");
-      const isBypassActive = parsedDate && nowTime < bypassExpiry && (parsedDate.getFullYear() === 2026 && parsedDate.getMonth() === 5 && (parsedDate.getDate() === 1 || parsedDate.getDate() === 2));
+  // Time Lock check (operating-hours window, admin-configurable). The after-hours
+  // exceptions and June 1/2 backdating bypass are preserved.
+  if (await isOutsideOperatingWindow()) {
+    // Check 20-hour access bypass for June 1st and June 2nd, 2026
+    const parsedDate = issueDateStr ? new Date(issueDateStr) : null;
+    const nowTime = new Date();
+    const bypassExpiry = new Date("2026-07-10T10:04:11.000Z");
+    const isBypassActive = parsedDate && nowTime < bypassExpiry && (parsedDate.getFullYear() === 2026 && parsedDate.getMonth() === 5 && (parsedDate.getDate() === 1 || parsedDate.getDate() === 2));
 
-      if (reason !== "Vehicle Breakdown" && reason !== "Active Night Work" && !isBypassActive) {
-        return { error: "During locked hours (17:00 PM - 08:00 AM), fuel issues are only allowed for 'Vehicle Breakdown' or 'Active Night Work'. Please select a valid reason." };
-      }
+    if (reason !== "Vehicle Breakdown" && reason !== "Active Night Work" && !isBypassActive) {
+      return { error: "During locked hours (17:00 PM - 08:00 AM), fuel issues are only allowed for 'Vehicle Breakdown' or 'Active Night Work'. Please select a valid reason." };
     }
   }
 
@@ -695,19 +677,9 @@ export async function dispatchToSiteTankAction(formData: FormData) {
     return { error: "Litres to dispatch must be greater than zero." };
   }
 
-  // Time lock (operations window)
-  if (process.env.TEST_ENV !== "true") {
-    const colomboHour = parseInt(
-      new Intl.DateTimeFormat("en-US", {
-        timeZone: "Asia/Colombo",
-        hour: "numeric",
-        hour12: false,
-      }).format(new Date()),
-      10
-    );
-    if (colomboHour < 8 || colomboHour >= 17) {
-      return { error: "Fuel operations are only allowed between 08:00 AM and 17:00 PM." };
-    }
+  // Time lock (operating-hours window, admin-configurable)
+  if (await isOutsideOperatingWindow()) {
+    return { error: "Fuel operations are only allowed between 08:00 AM and 17:00 PM." };
   }
 
   try {
