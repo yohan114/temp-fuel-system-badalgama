@@ -6,10 +6,11 @@ export interface ReportFilter {
   fuelKind?: string;
   categoryId?: string;
   assetId?: string;
+  projectId?: string;
 }
 
 export async function aggregateFuelData(filter: ReportFilter) {
-  const { from, to, fuelKind, categoryId, assetId } = filter;
+  const { from, to, fuelKind, categoryId, assetId, projectId } = filter;
 
   // Build where clause for FuelIssue
   const issueWhere: any = {
@@ -22,9 +23,10 @@ export async function aggregateFuelData(filter: ReportFilter) {
   if (fuelKind) issueWhere.fuelKind = fuelKind;
   if (assetId) issueWhere.assetId = assetId;
   if (categoryId) {
-    issueWhere.asset = {
-      categoryId: categoryId,
-    };
+    issueWhere.asset = { ...(issueWhere.asset || {}), categoryId };
+  }
+  if (projectId) {
+    issueWhere.asset = { ...(issueWhere.asset || {}), projectId };
   }
 
   // Fetch all matching issues
@@ -51,6 +53,7 @@ export async function aggregateFuelData(filter: ReportFilter) {
   const categoryTotals: Record<string, { name: string; code: string; litres: number; costCents: number }> = {};
   const assetTotals: Record<string, { code: string; brand: string | null; typeLabel: string | null; litres: number; costCents: number; meterType: string; assetId: string }> = {};
   const trendTotals: Record<string, { date: string; litres: number; costCents: number }> = {};
+  const monthlyTotals: Record<string, { month: string; litres: number; costCents: number }> = {};
   const fuelKindTotals: Record<string, { litres: number; costCents: number }> = {
     AUTO_DIESEL: { litres: 0, costCents: 0 },
     SUPER_DIESEL: { litres: 0, costCents: 0 },
@@ -138,6 +141,14 @@ export async function aggregateFuelData(filter: ReportFilter) {
     }
     trendTotals[dayKey].litres += issue.litres;
     trendTotals[dayKey].costCents += issue.totalCost;
+
+    // Monthly trend totals (YYYY-MM)
+    const monthKey = issue.issueDate.toISOString().slice(0, 7);
+    if (!monthlyTotals[monthKey]) {
+      monthlyTotals[monthKey] = { month: monthKey, litres: 0, costCents: 0 };
+    }
+    monthlyTotals[monthKey].litres += issue.litres;
+    monthlyTotals[monthKey].costCents += issue.totalCost;
   }
 
   // Calculate efficiency & running for assets in breakdown
@@ -209,6 +220,7 @@ export async function aggregateFuelData(filter: ReportFilter) {
     assetBreakdown: assetsList,
     fuelSplit: fuelKindTotals,
     trend: Object.values(trendTotals).sort((a, b) => a.date.localeCompare(b.date)),
+    monthlyTrend: Object.values(monthlyTotals).sort((a, b) => a.month.localeCompare(b.month)),
     siteBreakdown: Object.values(siteTotals).sort((a, b) => b.totalLitres - a.totalLitres),
   };
 }

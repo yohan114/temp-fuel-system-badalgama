@@ -6,7 +6,7 @@ import WorkshopConsole from "./WorkshopConsole";
 
 export default async function WorkshopPage() {
   const session = await getSession();
-  if (!session || (session.role !== "ADMIN" && session.role !== "WORKSHOP")) {
+  if (!session || (session.role !== "ADMIN" && session.role !== "WORKSHOP" && session.role !== "SITE_PUMP")) {
     redirect("/");
   }
 
@@ -26,9 +26,14 @@ export default async function WorkshopPage() {
     orderBy: { name: "asc" },
   });
 
-  // Fetch assets list for autofilling (no scoping for workshop pumps!)
+  // Fetch assets list for autofilling. The main pump sees the whole fleet; a site
+  // pump operator only sees vehicles allocated to their own site.
+  const assetWhere: any = { status: { not: "DISPOSED" } };
+  if (session.role === "SITE_PUMP" && tank?.projectId) {
+    assetWhere.projectId = tank.projectId;
+  }
   const assets = await prisma.asset.findMany({
-    where: { status: { not: "DISPOSED" } },
+    where: assetWhere,
     select: {
       id: true,
       code: true,
@@ -101,6 +106,7 @@ export default async function WorkshopPage() {
       bulkRequests={bulkRequests}
       projects={projects}
       role={session.role}
+      canDispatchToSites={session.role === "ADMIN" || session.role === "WORKSHOP"}
       isLocked={isLocked}
       lockMessage={lockMessage}
       todayStr={colomboTodayStr}

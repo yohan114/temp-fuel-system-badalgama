@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useTransition } from "react";
-import { submitBulkRequestAction, workshopIssueFuelAction } from "@/app/actions/workshop";
+import { submitBulkRequestAction, workshopIssueFuelAction, dispatchToSiteTankAction } from "@/app/actions/workshop";
 import { 
   Database, 
   Plus, 
@@ -73,6 +73,7 @@ interface WorkshopConsoleProps {
   bulkRequests: BulkReqProp[];
   projects: ProjectProp[];
   role: string;
+  canDispatchToSites: boolean;
   isLocked: boolean;
   lockMessage: string;
   todayStr: string;
@@ -87,6 +88,7 @@ export default function WorkshopConsole({
   bulkRequests: initialRequests,
   projects,
   role,
+  canDispatchToSites,
   isLocked,
   lockMessage,
   todayStr,
@@ -130,46 +132,25 @@ export default function WorkshopConsole({
 
     const formData = new FormData(e.currentTarget);
     const targetProjectId = formData.get("projectId")?.toString() || "";
-    const matchedProject = projects.find(p => p.id === targetProjectId);
-    if (!matchedProject) {
+    if (!projects.find(p => p.id === targetProjectId)) {
       setError("Please select a valid project site.");
       return;
     }
 
-    const assetCode = `SITE-${matchedProject.code}`;
-    formData.set("assetId", assetCode);
-
     startTransition(async () => {
       try {
-        const res = await workshopIssueFuelAction(formData);
+        // Tank-to-tank transfer: tops up the destination site's storage tank.
+        const res = await dispatchToSiteTankAction(formData);
         if (res.error) {
           setError(res.error);
         } else {
           setSuccess(true);
           const litres = parseFloat(formData.get("litres")?.toString() || "0");
-          const formDateStr = formData.get("issueDate")?.toString();
-          const optimisticDate = formDateStr ? new Date(formDateStr) : new Date();
 
-          // Decrement local balance in UI state
+          // Decrement local source balance in UI state
           if (activeTank) {
             setActiveTank(prev => prev ? { ...prev, balance: prev.balance - litres } : null);
           }
-
-          // Add optimistic issue in UI
-          setIssues(prev => [
-            {
-              id: Math.random().toString(),
-              fuelKind: activeTank?.fuelKind || "AUTO_DIESEL",
-              litres,
-              meterReading: null,
-              readingType: "KM",
-              totalCost: 0,
-              issueDate: optimisticDate,
-              asset: { code: assetCode },
-              issuedBy: { name: "Current Operator" },
-            },
-            ...prev,
-          ]);
 
           setTimeout(() => closeModal(), 1500);
         }
@@ -288,7 +269,7 @@ export default function WorkshopConsole({
       {/* Page Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-white tracking-wide">Workshop Pump Console</h1>
+          <h1 className="text-xl font-bold text-white tracking-wide">{canDispatchToSites ? "Workshop Pump Console" : "Site Pump Console"}</h1>
           <p className="text-xs text-gray-400 mt-1 capitalize">
             Manage dispatch inventories and vehicle fillings for **{activeTank.name}**.
           </p>
@@ -323,13 +304,15 @@ export default function WorkshopConsole({
             Issue Fuel to Vehicle
           </button>
 
-          <button
-            onClick={() => openModal("site-issue")}
-            className="flex items-center gap-2 bg-[#121420] hover:bg-[#1b1e30] border border-white/5 text-gray-200 px-4 py-2.5 rounded-xl text-xs font-semibold tracking-wide shadow-md active:scale-95 disabled:opacity-40 disabled:pointer-events-none transition-all w-fit"
-          >
-            <Database className="w-4 h-4 text-indigo-400" />
-            Issue Fuel to Project Site
-          </button>
+          {canDispatchToSites && (
+            <button
+              onClick={() => openModal("site-issue")}
+              className="flex items-center gap-2 bg-[#121420] hover:bg-[#1b1e30] border border-white/5 text-gray-200 px-4 py-2.5 rounded-xl text-xs font-semibold tracking-wide shadow-md active:scale-95 disabled:opacity-40 disabled:pointer-events-none transition-all w-fit"
+            >
+              <Database className="w-4 h-4 text-indigo-400" />
+              Issue Fuel to Project Site
+            </button>
+          )}
         </div>
       </div>
 
@@ -378,7 +361,11 @@ export default function WorkshopConsole({
           <div>
             <h4 className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-3">Operator Instructions</h4>
             <ul className="text-[11px] text-gray-400 space-y-2 list-disc pl-4 leading-relaxed font-medium">
-              <li>You can refuel <strong>any vehicle or machinery</strong> in the E&C fleet.</li>
+              <li>
+                {canDispatchToSites
+                  ? <>You can refuel <strong>any vehicle or machinery</strong> in the E&C fleet.</>
+                  : <>You can refuel <strong>vehicles assigned to your site</strong>, plus unregistered machinery.</>}
+              </li>
               <li>Dispatched quantities are automatically deducted from your pump storage.</li>
               <li>If the fuel level is low, request a bulk replenishment immediately.</li>
               <li>Type custom asset codes to auto-create unregistered items under "OTHER".</li>

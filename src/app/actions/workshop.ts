@@ -255,6 +255,17 @@ export async function approveBulkRequestAction(requestId: string, reviewNote: st
           },
         });
 
+        await tx.bulkTransfer.create({
+          data: {
+            type: "REPLENISH",
+            fuelKind: req.fuelKind,
+            litres: req.requestedLitres,
+            toTankId: req.bulkTankId,
+            actorId: admin.id,
+            note: "Bulk delivery to main pump",
+          },
+        });
+
         await tx.auditLog.create({
           data: {
             actorId: admin.id,
@@ -298,6 +309,18 @@ export async function approveBulkRequestAction(requestId: string, reviewNote: st
             balance: {
               increment: req.requestedLitres,
             },
+          },
+        });
+
+        await tx.bulkTransfer.create({
+          data: {
+            type: "TRANSFER",
+            fuelKind: req.fuelKind,
+            litres: req.requestedLitres,
+            fromTankId: mainPump.id,
+            toTankId: req.bulkTankId,
+            actorId: admin.id,
+            note: "Replenishment transfer to site tank",
           },
         });
 
@@ -386,9 +409,12 @@ export async function workshopIssueFuelAction(formData: FormData) {
     return { error: "You are not authorized to perform this action" };
   }
 
-  if (user.role !== "WORKSHOP" || !user.bulkTankId) {
-    return { error: "Only accounts with a linked workshop pump can issue fuel from bulk." };
+  if ((user.role !== "WORKSHOP" && user.role !== "SITE_PUMP") || !user.bulkTankId) {
+    return { error: "Only accounts with a linked pump can issue fuel from bulk." };
   }
+
+  // Site Pump Operators are restricted to their own site's vehicles.
+  const isSiteScoped = user.role === "SITE_PUMP";
 
   const assetId = formData.get("assetId")?.toString();
   const litresStr = formData.get("litres")?.toString();
@@ -504,23 +530,31 @@ export async function workshopIssueFuelAction(formData: FormData) {
       }
       
       const isSiteAsset = assetId.trim().toUpperCase().startsWith("SITE-");
-      
+
+      // Unregistered machinery is auto-created. For a site operator it is stamped
+      // with their site so it stays within their scope.
       asset = await prisma.asset.create({
         data: {
           code: assetId.trim().toUpperCase(),
           categoryId: otherCategory.id,
-          projectId: projectId || null,
+          projectId: isSiteScoped ? tank.projectId : (projectId || null),
           meterType: "KM",
           status: "ACTIVE",
           brand: isSiteAsset ? "Site Storage" : "Quick Added",
           typeLabel: isSiteAsset ? "Project Site" : "Other Asset",
         }
       });
-    } else if (projectId && !asset.projectId) {
-      asset = await prisma.asset.update({
-        where: { id: asset.id },
-        data: { projectId }
-      });
+    } else {
+      // Site operators may only fuel vehicles allocated to their own site.
+      if (isSiteScoped && tank.projectId && asset.projectId !== tank.projectId) {
+        return { error: `${asset.code} is not assigned to your site. You can only fuel vehicles allocated to this site.` };
+      }
+      if (projectId && !asset.projectId) {
+        asset = await prisma.asset.update({
+          where: { id: asset.id },
+          data: { projectId }
+        });
+      }
     }
 
     if (meterReading !== null) {
@@ -597,14 +631,26 @@ export async function workshopIssueFuelAction(formData: FormData) {
         });
       }
 
-      // D. Log audit
+      // D. Record the draw in the tank movement ledger
+      await tx.bulkTransfer.create({
+        data: {
+          type: "ISSUE",
+          fuelKind: tank.fuelKind,
+          litres,
+          fromTankId: tank.id,
+          actorId: user.id,
+          note: `Issued to ${asset.code}`,
+        },
+      });
+
+      // E. Log audit
       await tx.auditLog.create({
         data: {
           actorId: user.id,
           action: "CREATE",
           entity: "FuelIssue",
           entityId: issue.id,
-          summary: `Workshop Pump issued ${litres}L of ${tank.fuelKind} to ${asset.code} (Deducted from ${tank.name})`,
+          summary: `Pump issued ${litres}L of ${tank.fuelKind} to ${asset.code} (Deducted from ${tank.name})`,
         },
       });
     });
@@ -617,6 +663,133 @@ export async function workshopIssueFuelAction(formData: FormData) {
   } catch (err: any) {
     console.error("Workshop issue fuel error:", err);
     return { error: err.message || "Failed to log fuel dispatch." };
+  }
+}
+
+// 5b. Dispatch bulk fuel from the main pump directly into a project site's tank storage.
+// Unlike issuing to a vehicle, this is a tank-to-tank transfer: it tops up the site's
+// storage so the site's own pump operator can then issue from it.
+export async function dispatchToSiteTankAction(formData: FormData) {
+  let user;
+  try {
+    user = await assertCan("create");
+  } catch (err) {
+    return { error: "You are not authorized to perform this action" };
+  }
+
+  // Only the main pump operator (or an admin) may push fuel into site tanks.
+  if (user.role !== "ADMIN" && user.role !== "WORKSHOP") {
+    return { error: "Only the main pump operator can dispatch fuel to project sites." };
+  }
+
+  const targetProjectId = formData.get("projectId")?.toString();
+  const litresStr = formData.get("litres")?.toString();
+  const note = formData.get("reason")?.toString() || null;
+
+  if (!targetProjectId || !litresStr) {
+    return { error: "Please select a target site and enter the litres to dispatch." };
+  }
+
+  const litres = parseFloat(litresStr);
+  if (isNaN(litres) || litres <= 0) {
+    return { error: "Litres to dispatch must be greater than zero." };
+  }
+
+  // Time lock (operations window)
+  if (process.env.TEST_ENV !== "true") {
+    const colomboHour = parseInt(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: "Asia/Colombo",
+        hour: "numeric",
+        hour12: false,
+      }).format(new Date()),
+      10
+    );
+    if (colomboHour < 8 || colomboHour >= 17) {
+      return { error: "Fuel operations are only allowed between 08:00 AM and 17:00 PM." };
+    }
+  }
+
+  try {
+    // Resolve the source pump: the operator's own tank, or the Badalgama main pump for admins.
+    let sourceTank = user.bulkTankId
+      ? await prisma.bulkTank.findUnique({ where: { id: user.bulkTankId } })
+      : null;
+
+    if (!sourceTank) {
+      const tanks = await prisma.bulkTank.findMany();
+      sourceTank =
+        tanks.find(
+          (t) =>
+            t.name.toLowerCase().includes("badalgama") &&
+            t.name.toLowerCase().includes("main")
+        ) || null;
+    }
+
+    if (!sourceTank) {
+      return { error: "No source pump tank is linked to your account." };
+    }
+
+    const source = sourceTank;
+
+    // Destination: a tank at the chosen site holding the same fuel kind.
+    const destTank = await prisma.bulkTank.findFirst({
+      where: { projectId: targetProjectId, fuelKind: source.fuelKind },
+    });
+
+    if (!destTank) {
+      return {
+        error: `The selected site has no ${source.fuelKind.replace("_", " ")} storage tank. Create one in Admin → Projects first.`,
+      };
+    }
+
+    if (destTank.id === source.id) {
+      return { error: "The source and destination tanks cannot be the same." };
+    }
+
+    if (source.balance < litres) {
+      return {
+        error: `Insufficient fuel in ${source.name}. Available: ${source.balance.toFixed(1)}L, attempting to dispatch: ${litres}L.`,
+      };
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.bulkTank.update({
+        where: { id: source.id },
+        data: { balance: { decrement: litres } },
+      });
+      await tx.bulkTank.update({
+        where: { id: destTank.id },
+        data: { balance: { increment: litres } },
+      });
+      await tx.bulkTransfer.create({
+        data: {
+          type: "TRANSFER",
+          fuelKind: source.fuelKind,
+          litres,
+          fromTankId: source.id,
+          toTankId: destTank.id,
+          actorId: user.id,
+          note,
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorId: user.id,
+          action: "CREATE",
+          entity: "BulkTransfer",
+          summary: `Dispatched ${litres}L of ${source.fuelKind} from "${source.name}" into site tank "${destTank.name}"`,
+        },
+      });
+    });
+
+    revalidatePath("/workshop");
+    revalidatePath("/admin/projects");
+    revalidatePath("/admin/sites");
+    return { success: true };
+  } catch (err: any) {
+    console.error("Dispatch to site tank error:", err);
+    return { error: err.message || "Failed to dispatch fuel to site tank." };
   }
 }
 

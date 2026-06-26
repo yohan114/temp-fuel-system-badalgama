@@ -108,9 +108,9 @@ export default function ManageUsersClient({
                   name,
                   role,
                   projectId: role === "USER" ? projectId : null,
-                  bulkTankId: role === "WORKSHOP" ? bulkTankId : null,
+                  bulkTankId: role === "WORKSHOP" || role === "SITE_PUMP" ? bulkTankId : null,
                   project: role === "USER" ? matchedProject : null,
-                  bulkTank: role === "WORKSHOP" ? matchedTank : null,
+                  bulkTank: role === "WORKSHOP" || role === "SITE_PUMP" ? matchedTank : null,
                 }
               : u
           )
@@ -175,6 +175,8 @@ export default function ManageUsersClient({
                       ? `Site: ${u.project.name}`
                       : u.role === "WORKSHOP" && u.bulkTank
                       ? `Tank: ${u.bulkTank.name}`
+                      : u.role === "SITE_PUMP" && u.bulkTank
+                      ? `Pump: ${u.bulkTank.name}${u.project ? ` • ${u.project.name}` : ""}`
                       : "—"}
                   </td>
                   <td className="px-6 py-3.5">
@@ -281,7 +283,8 @@ export default function ManageUsersClient({
                   <option value="USER">User (Add-Only Requests & Readings)</option>
                   <option value="ADMIN">Admin (Full System Controls)</option>
                   <option value="ALLOCATOR">Allocator (Project Vehicle Manager)</option>
-                  <option value="WORKSHOP">Workshop Pump Operator</option>
+                  <option value="WORKSHOP">Workshop Operator (Main Pump)</option>
+                  <option value="SITE_PUMP">Site Pump Operator (Single Site)</option>
                 </select>
               </div>
 
@@ -305,7 +308,7 @@ export default function ManageUsersClient({
 
               <div>
                 <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                  Bulk Tank Assignment (For Workshop Role Only)
+                  Bulk Tank Assignment (For Workshop / Site Pump Roles)
                 </label>
                 <select
                   name="bulkTankId"

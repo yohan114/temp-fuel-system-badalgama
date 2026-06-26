@@ -1,6 +1,7 @@
 import React from "react";
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/auth";
+import { scopedProjectId } from "@/lib/rbac";
 import { approveRequestAction, rejectRequestAction } from "@/app/actions/fuel";
 import Link from "next/link";
 import { FileClock, User, Check, X, FileText, Calendar, CornerDownRight, UserCheck } from "lucide-react";
@@ -23,9 +24,10 @@ export default async function FuelRequestsPage(props: PageProps) {
     where.status = statusFilter;
   }
 
-  if (session.role === "USER" && session.projectId) {
+  const scopeProjectId = scopedProjectId(session);
+  if (scopeProjectId) {
     where.asset = {
-      projectId: session.projectId,
+      projectId: scopeProjectId,
     };
   } else if (!isAdmin) {
     where.requestedById = session.userId;

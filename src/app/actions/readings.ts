@@ -1,7 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/db";
-import { assertCan } from "@/lib/rbac";
+import { assertCan, isProjectScoped } from "@/lib/rbac";
 import { revalidatePath } from "next/cache";
 
 export async function addReadingAction(formData: FormData) {
@@ -83,7 +83,7 @@ export async function addReadingAction(formData: FormData) {
       });
     } else {
       // Check project user scope
-      if (user.role === "USER" && user.projectId && asset.projectId !== user.projectId) {
+      if (isProjectScoped(user.role) && user.projectId && asset.projectId !== user.projectId) {
         return { error: "Asset does not belong to your assigned project" };
       }
     }

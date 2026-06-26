@@ -1,6 +1,7 @@
 import React from "react";
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/auth";
+import { scopedProjectId } from "@/lib/rbac";
 import Link from "next/link";
 import { Search, Gauge, Calendar, User, CornerDownRight } from "lucide-react";
 
@@ -23,11 +24,12 @@ export default async function ReadingsPage(props: PageProps) {
     };
   }
 
-  if (session.role === "USER" && session.projectId) {
+  const scopeProjectId = scopedProjectId(session);
+  if (scopeProjectId) {
     if (!where.asset) {
       where.asset = {};
     }
-    where.asset.projectId = session.projectId;
+    where.asset.projectId = scopeProjectId;
   }
 
   // 2. Query readings

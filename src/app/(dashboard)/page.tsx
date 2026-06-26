@@ -1,6 +1,7 @@
 import React from "react";
 import { prisma } from "@/lib/db";
 import { getSession, requireUser } from "@/lib/auth";
+import { isProjectScoped } from "@/lib/rbac";
 import QuickActions from "./components/QuickActions";
 import DashboardCharts from "./components/DashboardCharts";
 import ConditionWidget from "./components/ConditionWidget";
@@ -49,7 +50,7 @@ export default async function DashboardPage() {
     ? (colomboHour < 8 ? "Closed (Opens at 08:00 AM)" : "Closed (Locked at 17:00 PM)")
     : "Open (Locks at 17:00 PM)";
 
-  const isScoped = user.role === "USER" && user.projectId;
+  const isScoped = isProjectScoped(user.role) && user.projectId;
 
   // 1. Fetch KPI metrics
   const monthlyIssues = await prisma.fuelIssue.aggregate({

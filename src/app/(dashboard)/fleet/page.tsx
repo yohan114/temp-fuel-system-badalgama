@@ -1,6 +1,7 @@
 import React from "react";
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/auth";
+import { scopedProjectId } from "@/lib/rbac";
 import Link from "next/link";
 import { Search, Filter, Car, Gauge, Plus } from "lucide-react";
 
@@ -22,12 +23,13 @@ export default async function FleetPage(props: PageProps) {
   });
 
   // 2. Build where clause
+  const scopeProjectId = scopedProjectId(session);
   const where: any = {
     status: {
       in: ["ACTIVE", "INACTIVE"], // Excluding DISPOSED assets by default
     },
-    ...(session.role === "USER" && session.projectId ? {
-      projectId: session.projectId
+    ...(scopeProjectId ? {
+      projectId: scopeProjectId
     } : {}),
   };
 

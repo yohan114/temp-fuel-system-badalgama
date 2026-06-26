@@ -8,6 +8,39 @@ import fs from "fs";
 import path from "path";
 import Database from "better-sqlite3";
 
+const VALID_ROLES = ["ADMIN", "USER", "ALLOCATOR", "WORKSHOP", "SITE_PUMP"];
+
+// Resolve the project/tank scoping persisted for a user based on their role.
+// USER -> projectId only; WORKSHOP -> bulkTankId only (main pump, unscoped fleet);
+// SITE_PUMP -> bulkTankId + projectId derived from that tank's site.
+async function resolveRoleScope(
+  role: string,
+  projectId: string | null,
+  bulkTankId: string | null
+): Promise<{ projectId: string | null; bulkTankId: string | null } | { error: string }> {
+  if (role === "USER") {
+    return { projectId: projectId || null, bulkTankId: null };
+  }
+  if (role === "WORKSHOP") {
+    return { projectId: null, bulkTankId: bulkTankId || null };
+  }
+  if (role === "SITE_PUMP") {
+    if (!bulkTankId) {
+      return { error: "Site Pump Operators must be assigned a site tank." };
+    }
+    const tank = await prisma.bulkTank.findUnique({ where: { id: bulkTankId } });
+    if (!tank) {
+      return { error: "Selected site tank was not found." };
+    }
+    if (!tank.projectId) {
+      return { error: "That tank is not linked to a project site. Assign the tank to a site first (Admin → Projects)." };
+    }
+    return { projectId: tank.projectId, bulkTankId: tank.id };
+  }
+  // ADMIN, ALLOCATOR — no scope
+  return { projectId: null, bulkTankId: null };
+}
+
 // 1. Update Settings
 export async function updateSettingsAction(formData: FormData) {
   let admin;
@@ -84,7 +117,7 @@ export async function createUserAction(formData: FormData) {
     return { error: "All fields are required" };
   }
 
-  if (role !== "ADMIN" && role !== "USER" && role !== "ALLOCATOR" && role !== "WORKSHOP") {
+  if (!VALID_ROLES.includes(role)) {
     return { error: "Invalid user role specified" };
   }
 
@@ -97,6 +130,11 @@ export async function createUserAction(formData: FormData) {
       return { error: `Username "${username}" is already in use` };
     }
 
+    const scope = await resolveRoleScope(role, projectId, bulkTankId);
+    if ("error" in scope) {
+      return { error: scope.error };
+    }
+
     const passwordHash = bcrypt.hashSync(password, 10);
     const newUser = await prisma.user.create({
       data: {
@@ -105,8 +143,8 @@ export async function createUserAction(formData: FormData) {
         email,
         passwordHash,
         role,
-        projectId: role === "USER" && projectId ? projectId : null,
-        bulkTankId: role === "WORKSHOP" && bulkTankId ? bulkTankId : null,
+        projectId: scope.projectId,
+        bulkTankId: scope.bulkTankId,
         active: true,
         createdById: admin.id,
       },
@@ -339,7 +377,7 @@ export async function updateUserAssignmentAction(targetUserId: string, formData:
     return { error: "Name and Role are required fields" };
   }
 
-  if (role !== "ADMIN" && role !== "USER" && role !== "ALLOCATOR" && role !== "WORKSHOP") {
+  if (!VALID_ROLES.includes(role)) {
     return { error: "Invalid user role specified" };
   }
 
@@ -352,13 +390,18 @@ export async function updateUserAssignmentAction(targetUserId: string, formData:
       return { error: "User account not found" };
     }
 
+    const scope = await resolveRoleScope(role, projectId, bulkTankId);
+    if ("error" in scope) {
+      return { error: scope.error };
+    }
+
     const updatedUser = await prisma.user.update({
       where: { id: targetUserId },
       data: {
         name,
         role,
-        projectId: role === "USER" && projectId ? projectId : null,
-        bulkTankId: role === "WORKSHOP" && bulkTankId ? bulkTankId : null,
+        projectId: scope.projectId,
+        bulkTankId: scope.bulkTankId,
       },
     });
 
