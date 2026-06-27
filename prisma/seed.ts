@@ -24,6 +24,7 @@ const CATEGORY_MAP: Record<
   BD: { name: "Bed Truck", defaultMeterType: "KM", fleetGroup: "ROAD_VEHICLE" },
   DB: { name: "Dump Bowser", defaultMeterType: "KM", fleetGroup: "ROAD_VEHICLE" },
   WB: { name: "Water Bowser", defaultMeterType: "KM", fleetGroup: "ROAD_VEHICLE" },
+  TB: { name: "Tractor Bowser", defaultMeterType: "KM", fleetGroup: "ROAD_VEHICLE" },
   BS: { name: "Bus", defaultMeterType: "KM", fleetGroup: "ROAD_VEHICLE" },
   PV: { name: "Prime Mover", defaultMeterType: "KM", fleetGroup: "ROAD_VEHICLE" },
   BM: { name: "Boom Truck", defaultMeterType: "KM", fleetGroup: "ROAD_VEHICLE" },
