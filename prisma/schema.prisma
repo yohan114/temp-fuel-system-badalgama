@@ -38,6 +38,9 @@ model User {
   bulkRequests     BulkRequest[] @relation("BulkRequestedBy")
   reviewedBulk     BulkRequest[] @relation("BulkReviewedBy")
   bulkTransfers    BulkTransfer[] @relation("TransferActor")
+
+  startedBreakdowns  BreakdownEvent[] @relation("BreakdownStartedBy")
+  resolvedBreakdowns BreakdownEvent[] @relation("BreakdownResolvedBy")
 }
 
 model Category {
@@ -77,6 +80,7 @@ model Asset {
   fuelIssues    FuelIssue[]
   meterReadings MeterReading[]
   dailyConditions DailyCondition[]
+  breakdownEvents BreakdownEvent[]
 }
 
 model FuelPrice {
@@ -258,6 +262,26 @@ model BulkTransfer {
 
   @@index([toTankId, createdAt])
   @@index([fromTankId, createdAt])
+}
+
+model BreakdownEvent {
+  id           String    @id @default(uuid())
+  startedAt    DateTime  @default(now())
+  resolvedAt   DateTime?
+  note         String?
+  createdAt    DateTime  @default(now())
+
+  assetId      String
+  asset        Asset     @relation(fields: [assetId], references: [id])
+
+  startedById  String?
+  startedBy    User?     @relation("BreakdownStartedBy", fields: [startedById], references: [id])
+
+  resolvedById String?
+  resolvedBy   User?     @relation("BreakdownResolvedBy", fields: [resolvedById], references: [id])
+
+  @@index([assetId, resolvedAt])
+  @@index([startedAt])
 }
 
 model BulkRequest {

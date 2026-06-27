@@ -29,6 +29,7 @@ export default async function AdminLayout({ children }: AdminLayoutProps) {
     { label: "Fuel Prices", href: "/admin/prices", icon: Coins },
     { label: "Project Sites", href: "/admin/projects", icon: FolderGit2 },
     { label: "Site Fuel Overview", href: "/admin/sites", icon: Fuel },
+    { label: "Breakdown Log", href: "/admin/breakdowns", icon: ShieldAlert },
     { label: "Database Backups", href: "/admin/backups", icon: Database },
     { label: "User Accounts", href: "/admin/users", icon: Users2 },
     { label: "Operating Hours", href: "/admin/settings", icon: Clock },

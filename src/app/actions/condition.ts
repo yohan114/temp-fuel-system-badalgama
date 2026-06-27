@@ -71,6 +71,27 @@ export async function logDailyConditionAction(assetId: string, status: string, n
       },
     });
 
+    // Track continuous breakdown periods (start -> repair) for downtime reporting.
+    // Best-effort: a missing/unmigrated table must never block condition logging.
+    try {
+      const openEvent = await prisma.breakdownEvent.findFirst({
+        where: { assetId, resolvedAt: null },
+        orderBy: { startedAt: "desc" },
+      });
+      if (status === "BREAKDOWN" && !openEvent) {
+        await prisma.breakdownEvent.create({
+          data: { assetId, startedById: user.id, note },
+        });
+      } else if (status === "WORKING" && openEvent) {
+        await prisma.breakdownEvent.update({
+          where: { id: openEvent.id },
+          data: { resolvedAt: new Date(), resolvedById: user.id },
+        });
+      }
+    } catch (err: any) {
+      console.warn("Breakdown event tracking skipped:", err?.message || err);
+    }
+
     await prisma.auditLog.create({
       data: {
         actorId: user.id,
@@ -84,6 +105,7 @@ export async function logDailyConditionAction(assetId: string, status: string, n
     revalidatePath("/");
     revalidatePath("/fleet");
     revalidatePath(`/fleet/${asset.code}`);
+    revalidatePath("/admin/breakdowns");
     return { success: true };
   } catch (err: any) {
     console.error("Log daily condition error:", err);
