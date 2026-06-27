@@ -4,6 +4,26 @@ import { prisma } from "@/lib/db";
 import { assertCan } from "@/lib/rbac";
 import { revalidatePath } from "next/cache";
 import { getPriceForDate } from "@/lib/pricing";
+import { isOutsideOperatingWindow } from "@/lib/ops";
+
+// Best-effort tank-movement ledger write. The BulkTransfer ledger is supplementary
+// audit data, so a failure here (e.g. the table not yet created on a deployment that
+// skipped `prisma db push`) must never break or roll back the fuel operation.
+async function recordBulkTransfer(data: {
+  type: string;
+  fuelKind: string;
+  litres: number;
+  fromTankId?: string | null;
+  toTankId?: string | null;
+  actorId?: string | null;
+  note?: string | null;
+}) {
+  try {
+    await prisma.bulkTransfer.create({ data });
+  } catch (err: any) {
+    console.warn("BulkTransfer ledger write skipped:", err?.message || err);
+  }
+}
 
 // 1. Create Bulk Tank (Admin only)
 export async function createBulkTankAction(formData: FormData) {
@@ -142,19 +162,9 @@ export async function submitBulkRequestAction(formData: FormData) {
     return { error: "You are not authorized to perform this action" };
   }
 
-  // Time Lock check
-  if (process.env.TEST_ENV !== "true") {
-    const colomboHour = parseInt(
-      new Intl.DateTimeFormat("en-US", {
-        timeZone: "Asia/Colombo",
-        hour: "numeric",
-        hour12: false,
-      }).format(new Date()),
-      10
-    );
-    if (colomboHour < 8 || colomboHour >= 17) {
-      return { error: "Fuel operations are only allowed between 08:00 AM and 17:00 PM." };
-    }
+  // Time Lock check (operating-hours window, admin-configurable)
+  if (await isOutsideOperatingWindow()) {
+    return { error: "Fuel operations are only allowed between 08:00 AM and 17:00 PM." };
   }
 
   const bulkTankId = formData.get("bulkTankId")?.toString();
@@ -167,6 +177,21 @@ export async function submitBulkRequestAction(formData: FormData) {
   const requestedLitres = parseFloat(requestedLitresStr);
   if (isNaN(requestedLitres) || requestedLitres <= 0) {
     return { error: "Requested litres must be greater than zero" };
+  }
+
+  // Parse the requested fuel source: "OUTSIDE", "tank:<id>" (a pump/site), or
+  // empty (legacy main-pump default handled at approval time).
+  const sourceRaw = formData.get("source")?.toString() || "";
+  let sourceType: string | null = null;
+  let sourceTankId: string | null = null;
+  if (sourceRaw.startsWith("tank:")) {
+    sourceType = "TANK";
+    sourceTankId = sourceRaw.slice(5) || null;
+    if (sourceTankId === bulkTankId) {
+      return { error: "Source and destination tanks cannot be the same." };
+    }
+  } else if (sourceRaw === "OUTSIDE") {
+    sourceType = "OUTSIDE";
   }
 
   try {
@@ -184,6 +209,8 @@ export async function submitBulkRequestAction(formData: FormData) {
         requestedLitres,
         requestedById: user.id,
         status: "PENDING",
+        sourceType,
+        sourceTankId,
       },
     });
 
@@ -228,7 +255,7 @@ export async function approveBulkRequestAction(requestId: string, reviewNote: st
       return { error: "Request has already been processed" };
     }
 
-    await prisma.$transaction(async (tx) => {
+    const ledger = await prisma.$transaction(async (tx) => {
       // 1. Set request status to APPROVED
       await tx.bulkRequest.update({
         where: { id: requestId },
@@ -240,8 +267,62 @@ export async function approveBulkRequestAction(requestId: string, reviewNote: st
         },
       });
 
+      // Honour the source the requester selected, if any.
+      if (req.sourceTankId) {
+        const sourceTank = await tx.bulkTank.findUnique({ where: { id: req.sourceTankId } });
+        if (!sourceTank) {
+          throw new Error("The selected source pump no longer exists.");
+        }
+        if (sourceTank.id === req.bulkTankId) {
+          throw new Error("The source and destination tanks are the same.");
+        }
+        if (sourceTank.balance < req.requestedLitres) {
+          throw new Error(`Insufficient fuel in ${sourceTank.name}. Available: ${sourceTank.balance.toFixed(1)}L, requested: ${req.requestedLitres}L.`);
+        }
+        await tx.bulkTank.update({ where: { id: sourceTank.id }, data: { balance: { decrement: req.requestedLitres } } });
+        await tx.bulkTank.update({ where: { id: req.bulkTankId }, data: { balance: { increment: req.requestedLitres } } });
+        await tx.auditLog.create({
+          data: {
+            actorId: admin.id,
+            action: "APPROVE",
+            entity: "BulkRequest",
+            entityId: requestId,
+            summary: `Approved transfer of ${req.requestedLitres}L from "${sourceTank.name}" to "${req.bulkTank.name}"`,
+          },
+        });
+        return {
+          type: "TRANSFER",
+          fuelKind: req.fuelKind,
+          litres: req.requestedLitres,
+          fromTankId: sourceTank.id as string | null,
+          toTankId: req.bulkTankId as string | null,
+          note: `Transfer from ${sourceTank.name}`,
+        };
+      }
+
+      if (req.sourceType === "OUTSIDE") {
+        await tx.bulkTank.update({ where: { id: req.bulkTankId }, data: { balance: { increment: req.requestedLitres } } });
+        await tx.auditLog.create({
+          data: {
+            actorId: admin.id,
+            action: "APPROVE",
+            entity: "BulkRequest",
+            entityId: requestId,
+            summary: `Approved external delivery of ${req.requestedLitres}L to "${req.bulkTank.name}"`,
+          },
+        });
+        return {
+          type: "REPLENISH",
+          fuelKind: req.fuelKind,
+          litres: req.requestedLitres,
+          fromTankId: null as string | null,
+          toTankId: req.bulkTankId as string | null,
+          note: "External / outside delivery",
+        };
+      }
+
       // Check if target is the main pump (Badalgama Main pump)
-      const isMainPump = req.bulkTank.name.toLowerCase().includes("badalgama") && 
+      const isMainPump = req.bulkTank.name.toLowerCase().includes("badalgama") &&
                          req.bulkTank.name.toLowerCase().includes("main");
 
       if (isMainPump) {
@@ -264,6 +345,15 @@ export async function approveBulkRequestAction(requestId: string, reviewNote: st
             summary: `Approved bulk delivery of ${req.requestedLitres}L to Main Pump "${req.bulkTank.name}"`,
           },
         });
+
+        return {
+          type: "REPLENISH",
+          fuelKind: req.fuelKind,
+          litres: req.requestedLitres,
+          fromTankId: null as string | null,
+          toTankId: req.bulkTankId as string | null,
+          note: "Bulk delivery to main pump",
+        };
       } else {
         // Site tank refuel: draw from the Badalgama Main pump for the same fuel kind
         const allTanks = await tx.bulkTank.findMany();
@@ -310,12 +400,25 @@ export async function approveBulkRequestAction(requestId: string, reviewNote: st
             summary: `Approved bulk fuel transfer of ${req.requestedLitres}L from "${mainPump.name}" to "${req.bulkTank.name}"`,
           },
         });
+
+        return {
+          type: "TRANSFER",
+          fuelKind: req.fuelKind,
+          litres: req.requestedLitres,
+          fromTankId: mainPump.id as string | null,
+          toTankId: req.bulkTankId as string | null,
+          note: "Replenishment transfer to site tank",
+        };
       }
     });
+
+    // Best-effort ledger write — must never block or roll back the approval.
+    await recordBulkTransfer({ ...ledger, actorId: admin.id });
 
     try {
       revalidatePath("/admin/projects");
       revalidatePath("/workshop");
+      revalidatePath("/admin/sites");
     } catch (e) {
       // Ignore Next.js runtime static generation store errors in CLI tests
     }
@@ -386,9 +489,12 @@ export async function workshopIssueFuelAction(formData: FormData) {
     return { error: "You are not authorized to perform this action" };
   }
 
-  if (user.role !== "WORKSHOP" || !user.bulkTankId) {
-    return { error: "Only accounts with a linked workshop pump can issue fuel from bulk." };
+  if ((user.role !== "WORKSHOP" && user.role !== "SITE_PUMP") || !user.bulkTankId) {
+    return { error: "Only accounts with a linked pump can issue fuel from bulk." };
   }
+
+  // Site Pump Operators are restricted to their own site's vehicles.
+  const isSiteScoped = user.role === "SITE_PUMP";
 
   const assetId = formData.get("assetId")?.toString();
   const litresStr = formData.get("litres")?.toString();
@@ -397,26 +503,17 @@ export async function workshopIssueFuelAction(formData: FormData) {
   const projectId = formData.get("projectId")?.toString() || null;
   const issueDateStr = formData.get("issueDate")?.toString() || null;
 
-  // Time Lock check
-  if (process.env.TEST_ENV !== "true") {
-    const colomboHour = parseInt(
-      new Intl.DateTimeFormat("en-US", {
-        timeZone: "Asia/Colombo",
-        hour: "numeric",
-        hour12: false,
-      }).format(new Date()),
-      10
-    );
-    if (colomboHour < 8 || colomboHour >= 17) {
-      // Check 20-hour access bypass for June 1st and June 2nd, 2026
-      const parsedDate = issueDateStr ? new Date(issueDateStr) : null;
-      const nowTime = new Date();
-      const bypassExpiry = new Date("2026-07-10T10:04:11.000Z");
-      const isBypassActive = parsedDate && nowTime < bypassExpiry && (parsedDate.getFullYear() === 2026 && parsedDate.getMonth() === 5 && (parsedDate.getDate() === 1 || parsedDate.getDate() === 2));
+  // Time Lock check (operating-hours window, admin-configurable). The after-hours
+  // exceptions and June 1/2 backdating bypass are preserved.
+  if (await isOutsideOperatingWindow()) {
+    // Check 20-hour access bypass for June 1st and June 2nd, 2026
+    const parsedDate = issueDateStr ? new Date(issueDateStr) : null;
+    const nowTime = new Date();
+    const bypassExpiry = new Date("2026-07-10T10:04:11.000Z");
+    const isBypassActive = parsedDate && nowTime < bypassExpiry && (parsedDate.getFullYear() === 2026 && parsedDate.getMonth() === 5 && (parsedDate.getDate() === 1 || parsedDate.getDate() === 2));
 
-      if (reason !== "Vehicle Breakdown" && reason !== "Active Night Work" && !isBypassActive) {
-        return { error: "During locked hours (17:00 PM - 08:00 AM), fuel issues are only allowed for 'Vehicle Breakdown' or 'Active Night Work'. Please select a valid reason." };
-      }
+    if (reason !== "Vehicle Breakdown" && reason !== "Active Night Work" && !isBypassActive) {
+      return { error: "During locked hours (17:00 PM - 08:00 AM), fuel issues are only allowed for 'Vehicle Breakdown' or 'Active Night Work'. Please select a valid reason." };
     }
   }
 
@@ -504,23 +601,31 @@ export async function workshopIssueFuelAction(formData: FormData) {
       }
       
       const isSiteAsset = assetId.trim().toUpperCase().startsWith("SITE-");
-      
+
+      // Unregistered machinery is auto-created. For a site operator it is stamped
+      // with their site so it stays within their scope.
       asset = await prisma.asset.create({
         data: {
           code: assetId.trim().toUpperCase(),
           categoryId: otherCategory.id,
-          projectId: projectId || null,
+          projectId: isSiteScoped ? tank.projectId : (projectId || null),
           meterType: "KM",
           status: "ACTIVE",
           brand: isSiteAsset ? "Site Storage" : "Quick Added",
           typeLabel: isSiteAsset ? "Project Site" : "Other Asset",
         }
       });
-    } else if (projectId && !asset.projectId) {
-      asset = await prisma.asset.update({
-        where: { id: asset.id },
-        data: { projectId }
-      });
+    } else {
+      // Site operators may only fuel vehicles allocated to their own site.
+      if (isSiteScoped && tank.projectId && asset.projectId !== tank.projectId) {
+        return { error: `${asset.code} is not assigned to your site. You can only fuel vehicles allocated to this site.` };
+      }
+      if (projectId && !asset.projectId) {
+        asset = await prisma.asset.update({
+          where: { id: asset.id },
+          data: { projectId }
+        });
+      }
     }
 
     if (meterReading !== null) {
@@ -604,9 +709,19 @@ export async function workshopIssueFuelAction(formData: FormData) {
           action: "CREATE",
           entity: "FuelIssue",
           entityId: issue.id,
-          summary: `Workshop Pump issued ${litres}L of ${tank.fuelKind} to ${asset.code} (Deducted from ${tank.name})`,
+          summary: `Pump issued ${litres}L of ${tank.fuelKind} to ${asset.code} (Deducted from ${tank.name})`,
         },
       });
+    });
+
+    // Best-effort tank-movement ledger (never blocks the issue)
+    await recordBulkTransfer({
+      type: "ISSUE",
+      fuelKind: tank.fuelKind,
+      litres,
+      fromTankId: tank.id,
+      actorId: user.id,
+      note: `Issued to ${asset.code}`,
     });
 
     revalidatePath("/workshop");
@@ -617,6 +732,123 @@ export async function workshopIssueFuelAction(formData: FormData) {
   } catch (err: any) {
     console.error("Workshop issue fuel error:", err);
     return { error: err.message || "Failed to log fuel dispatch." };
+  }
+}
+
+// 5b. Dispatch bulk fuel from the main pump directly into a project site's tank storage.
+// Unlike issuing to a vehicle, this is a tank-to-tank transfer: it tops up the site's
+// storage so the site's own pump operator can then issue from it.
+export async function dispatchToSiteTankAction(formData: FormData) {
+  let user;
+  try {
+    user = await assertCan("create");
+  } catch (err) {
+    return { error: "You are not authorized to perform this action" };
+  }
+
+  // Only the main pump operator (or an admin) may push fuel into site tanks.
+  if (user.role !== "ADMIN" && user.role !== "WORKSHOP") {
+    return { error: "Only the main pump operator can dispatch fuel to project sites." };
+  }
+
+  const targetProjectId = formData.get("projectId")?.toString();
+  const litresStr = formData.get("litres")?.toString();
+  const note = formData.get("reason")?.toString() || null;
+
+  if (!targetProjectId || !litresStr) {
+    return { error: "Please select a target site and enter the litres to dispatch." };
+  }
+
+  const litres = parseFloat(litresStr);
+  if (isNaN(litres) || litres <= 0) {
+    return { error: "Litres to dispatch must be greater than zero." };
+  }
+
+  // Time lock (operating-hours window, admin-configurable)
+  if (await isOutsideOperatingWindow()) {
+    return { error: "Fuel operations are only allowed between 08:00 AM and 17:00 PM." };
+  }
+
+  try {
+    // Resolve the source pump: the operator's own tank, or the Badalgama main pump for admins.
+    let sourceTank = user.bulkTankId
+      ? await prisma.bulkTank.findUnique({ where: { id: user.bulkTankId } })
+      : null;
+
+    if (!sourceTank) {
+      const tanks = await prisma.bulkTank.findMany();
+      sourceTank =
+        tanks.find(
+          (t) =>
+            t.name.toLowerCase().includes("badalgama") &&
+            t.name.toLowerCase().includes("main")
+        ) || null;
+    }
+
+    if (!sourceTank) {
+      return { error: "No source pump tank is linked to your account." };
+    }
+
+    const source = sourceTank;
+
+    // Destination: a tank at the chosen site holding the same fuel kind.
+    const destTank = await prisma.bulkTank.findFirst({
+      where: { projectId: targetProjectId, fuelKind: source.fuelKind },
+    });
+
+    if (!destTank) {
+      return {
+        error: `The selected site has no ${source.fuelKind.replace("_", " ")} storage tank. Create one in Admin → Projects first.`,
+      };
+    }
+
+    if (destTank.id === source.id) {
+      return { error: "The source and destination tanks cannot be the same." };
+    }
+
+    if (source.balance < litres) {
+      return {
+        error: `Insufficient fuel in ${source.name}. Available: ${source.balance.toFixed(1)}L, attempting to dispatch: ${litres}L.`,
+      };
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.bulkTank.update({
+        where: { id: source.id },
+        data: { balance: { decrement: litres } },
+      });
+      await tx.bulkTank.update({
+        where: { id: destTank.id },
+        data: { balance: { increment: litres } },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorId: user.id,
+          action: "CREATE",
+          entity: "BulkTransfer",
+          summary: `Dispatched ${litres}L of ${source.fuelKind} from "${source.name}" into site tank "${destTank.name}"`,
+        },
+      });
+    });
+
+    // Best-effort tank-movement ledger (never blocks the dispatch)
+    await recordBulkTransfer({
+      type: "TRANSFER",
+      fuelKind: source.fuelKind,
+      litres,
+      fromTankId: source.id,
+      toTankId: destTank.id,
+      actorId: user.id,
+      note,
+    });
+
+    revalidatePath("/workshop");
+    revalidatePath("/admin/projects");
+    revalidatePath("/admin/sites");
+    return { success: true };
+  } catch (err: any) {
+    console.error("Dispatch to site tank error:", err);
+    return { error: err.message || "Failed to dispatch fuel to site tank." };
   }
 }
 

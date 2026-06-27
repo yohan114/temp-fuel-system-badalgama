@@ -7,6 +7,40 @@ import { revalidatePath } from "next/cache";
 import fs from "fs";
 import path from "path";
 import Database from "better-sqlite3";
+import { uploadBackupOffsite } from "@/lib/backup-offsite";
+
+const VALID_ROLES = ["ADMIN", "USER", "ALLOCATOR", "WORKSHOP", "SITE_PUMP"];
+
+// Resolve the project/tank scoping persisted for a user based on their role.
+// USER -> projectId only; WORKSHOP -> bulkTankId only (main pump, unscoped fleet);
+// SITE_PUMP -> bulkTankId + projectId derived from that tank's site.
+async function resolveRoleScope(
+  role: string,
+  projectId: string | null,
+  bulkTankId: string | null
+): Promise<{ projectId: string | null; bulkTankId: string | null } | { error: string }> {
+  if (role === "USER") {
+    return { projectId: projectId || null, bulkTankId: null };
+  }
+  if (role === "WORKSHOP") {
+    return { projectId: null, bulkTankId: bulkTankId || null };
+  }
+  if (role === "SITE_PUMP") {
+    if (!bulkTankId) {
+      return { error: "Site Pump Operators must be assigned a site tank." };
+    }
+    const tank = await prisma.bulkTank.findUnique({ where: { id: bulkTankId } });
+    if (!tank) {
+      return { error: "Selected site tank was not found." };
+    }
+    if (!tank.projectId) {
+      return { error: "That tank is not linked to a project site. Assign the tank to a site first (Admin → Projects)." };
+    }
+    return { projectId: tank.projectId, bulkTankId: tank.id };
+  }
+  // ADMIN, ALLOCATOR — no scope
+  return { projectId: null, bulkTankId: null };
+}
 
 // 1. Update Settings
 export async function updateSettingsAction(formData: FormData) {
@@ -84,7 +118,7 @@ export async function createUserAction(formData: FormData) {
     return { error: "All fields are required" };
   }
 
-  if (role !== "ADMIN" && role !== "USER" && role !== "ALLOCATOR" && role !== "WORKSHOP") {
+  if (!VALID_ROLES.includes(role)) {
     return { error: "Invalid user role specified" };
   }
 
@@ -97,6 +131,11 @@ export async function createUserAction(formData: FormData) {
       return { error: `Username "${username}" is already in use` };
     }
 
+    const scope = await resolveRoleScope(role, projectId, bulkTankId);
+    if ("error" in scope) {
+      return { error: scope.error };
+    }
+
     const passwordHash = bcrypt.hashSync(password, 10);
     const newUser = await prisma.user.create({
       data: {
@@ -105,8 +144,8 @@ export async function createUserAction(formData: FormData) {
         email,
         passwordHash,
         role,
-        projectId: role === "USER" && projectId ? projectId : null,
-        bulkTankId: role === "WORKSHOP" && bulkTankId ? bulkTankId : null,
+        projectId: scope.projectId,
+        bulkTankId: scope.bulkTankId,
         active: true,
         createdById: admin.id,
       },
@@ -185,7 +224,7 @@ export async function runOnDemandBackupAction() {
   }
 
   const dbPath = path.join(process.cwd(), "data", "app.db");
-  const backupDir = path.join(process.cwd(), "backups");
+  const backupDir = process.env.BACKUP_DIR || path.join(process.cwd(), "backups");
 
   if (!fs.existsSync(dbPath)) {
     return { error: "Database file 'data/app.db' does not exist" };
@@ -233,17 +272,22 @@ export async function runOnDemandBackupAction() {
       }
     });
 
+    // Push the fresh backup off-site (no-op unless BACKUP_REMOTE is configured)
+    const offsite = await uploadBackupOffsite(backupPath);
+
     await prisma.auditLog.create({
       data: {
         actorId: admin.id,
         action: "BACKUP",
         entity: "Database",
-        summary: `Manually triggered backup successful: ${backupFilename}. Rotated ${deletedCount} files.`,
+        summary: `Manually triggered backup successful: ${backupFilename}. Rotated ${deletedCount} files.${
+          offsite.attempted ? ` Off-site: ${offsite.success ? "uploaded" : "FAILED — " + offsite.message}` : ""
+        }`,
       },
     });
 
     revalidatePath("/admin/backups");
-    return { success: true, filename: backupFilename };
+    return { success: true, filename: backupFilename, offsite };
   } catch (err: any) {
     console.error("Manual backup error:", err);
     return { error: err.message || "Failed to complete database backup" };
@@ -339,7 +383,7 @@ export async function updateUserAssignmentAction(targetUserId: string, formData:
     return { error: "Name and Role are required fields" };
   }
 
-  if (role !== "ADMIN" && role !== "USER" && role !== "ALLOCATOR" && role !== "WORKSHOP") {
+  if (!VALID_ROLES.includes(role)) {
     return { error: "Invalid user role specified" };
   }
 
@@ -352,13 +396,18 @@ export async function updateUserAssignmentAction(targetUserId: string, formData:
       return { error: "User account not found" };
     }
 
+    const scope = await resolveRoleScope(role, projectId, bulkTankId);
+    if ("error" in scope) {
+      return { error: scope.error };
+    }
+
     const updatedUser = await prisma.user.update({
       where: { id: targetUserId },
       data: {
         name,
         role,
-        projectId: role === "USER" && projectId ? projectId : null,
-        bulkTankId: role === "WORKSHOP" && bulkTankId ? bulkTankId : null,
+        projectId: scope.projectId,
+        bulkTankId: scope.bulkTankId,
       },
     });
 
@@ -377,6 +426,43 @@ export async function updateUserAssignmentAction(targetUserId: string, formData:
   } catch (err: any) {
     console.error("Update user assignment error:", err);
     return { error: err.message || "Failed to update user assignment" };
+  }
+}
+
+// 7. Update Operations Settings (Admin only)
+export async function updateOpsSettingsAction(formData: FormData) {
+  let admin;
+  try {
+    admin = await assertCan("manage");
+  } catch (err) {
+    return { error: "You are not authorized to perform this action" };
+  }
+
+  const timeLockEnabled = formData.get("timeLockEnabled") === "true" ? "true" : "false";
+
+  try {
+    await prisma.setting.upsert({
+      where: { key: "ops.timeLockEnabled" },
+      update: { value: timeLockEnabled },
+      create: { key: "ops.timeLockEnabled", value: timeLockEnabled },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: admin.id,
+        action: "UPDATE",
+        entity: "Setting",
+        summary: `Updated operating-hours lock: ops.timeLockEnabled=${timeLockEnabled}`,
+      },
+    });
+
+    revalidatePath("/admin/settings");
+    revalidatePath("/workshop");
+    revalidatePath("/");
+    return { success: true };
+  } catch (err: any) {
+    console.error("Update ops settings error:", err);
+    return { error: err.message || "Failed to update operations settings" };
   }
 }
 

@@ -1,12 +1,13 @@
 import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
+import { uploadBackupOffsite } from "../src/lib/backup-offsite";
 
 async function runBackup() {
   console.log("Starting database backup...");
 
   const dbPath = path.join(process.cwd(), "data", "app.db");
-  const backupDir = path.join(process.cwd(), "backups");
+  const backupDir = process.env.BACKUP_DIR || path.join(process.cwd(), "backups");
 
   if (!fs.existsSync(dbPath)) {
     console.error(`Error: Source database does not exist at ${dbPath}`);
@@ -79,6 +80,16 @@ async function runBackup() {
     console.log(`Backup rotation complete. Deleted ${deletedCount} expired backup file(s).`);
   } catch (err) {
     console.error("Failed to apply backup rotation policy:", err);
+  }
+
+  // Push the fresh backup off-site (no-op unless BACKUP_REMOTE is configured)
+  try {
+    const offsite = await uploadBackupOffsite(backupPath);
+    if (offsite.attempted) {
+      console.log(offsite.success ? `Off-site upload OK: ${offsite.message}` : `Off-site upload FAILED: ${offsite.message}`);
+    }
+  } catch (err) {
+    console.error("Off-site upload error:", err);
   }
 }
 

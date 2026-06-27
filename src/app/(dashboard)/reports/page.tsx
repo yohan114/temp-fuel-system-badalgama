@@ -1,6 +1,8 @@
 import React from "react";
+import { prisma } from "@/lib/db";
 import { aggregateFuelData } from "@/lib/reports/aggregate";
 import { getSession } from "@/lib/auth";
+import { scopedProjectId } from "@/lib/rbac";
 import Link from "next/link";
 import { 
   FileSpreadsheet, 
@@ -15,7 +17,7 @@ import {
 import SiteConsumptionCharts from "./SiteConsumptionCharts";
 
 interface PageProps {
-  searchParams: Promise<{ from?: string; to?: string }>;
+  searchParams: Promise<{ from?: string; to?: string; project?: string }>;
 }
 
 export default async function ReportsPage(props: PageProps) {
@@ -35,10 +37,18 @@ export default async function ReportsPage(props: PageProps) {
   const fromDate = new Date(`${fromStr}T00:00:00Z`);
   const toDate = new Date(`${toStr}T23:59:59Z`);
 
+  // Project scope: site-scoped users (Site Pump / User) are locked to their own site.
+  const scopeProjectId = scopedProjectId(session);
+  const projects = scopeProjectId
+    ? []
+    : await prisma.project.findMany({ orderBy: { name: "asc" } });
+  const selectedProjectId = scopeProjectId || searchParams.project || undefined;
+
   // Run the aggregation service
   const data = await aggregateFuelData({
     from: fromDate,
     to: toDate,
+    projectId: selectedProjectId,
   });
 
   return (
@@ -52,28 +62,30 @@ export default async function ReportsPage(props: PageProps) {
           </p>
         </div>
 
-        {/* Export triggers */}
-        <div className="flex items-center gap-2">
-          <a
-            href={`/api/reports/export/xlsx?from=${fromStr}&to=${toStr}`}
-            className="flex items-center gap-2 bg-[#121420] border border-white/5 hover:border-emerald-500/20 hover:bg-[#1b1e30] text-gray-300 hover:text-white px-4 py-2.5 rounded-xl text-xs font-semibold shadow-md active:scale-95 transition-all"
-          >
-            <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-            Export Excel
-          </a>
-          <a
-            href={`/api/reports/export/pdf?from=${fromStr}&to=${toStr}`}
-            className="flex items-center gap-2 bg-[#121420] border border-white/5 hover:border-red-500/20 hover:bg-[#1b1e30] text-gray-300 hover:text-white px-4 py-2.5 rounded-xl text-xs font-semibold shadow-md active:scale-95 transition-all"
-          >
-            <FileText className="w-4 h-4 text-red-400" />
-            Export PDF
-          </a>
-        </div>
+        {/* Export triggers (hidden for site-scoped users to prevent cross-site export) */}
+        {!scopeProjectId && (
+          <div className="flex items-center gap-2">
+            <a
+              href={`/api/reports/export/xlsx?from=${fromStr}&to=${toStr}`}
+              className="flex items-center gap-2 bg-[#121420] border border-white/5 hover:border-emerald-500/20 hover:bg-[#1b1e30] text-gray-300 hover:text-white px-4 py-2.5 rounded-xl text-xs font-semibold shadow-md active:scale-95 transition-all"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+              Export Excel
+            </a>
+            <a
+              href={`/api/reports/export/pdf?from=${fromStr}&to=${toStr}`}
+              className="flex items-center gap-2 bg-[#121420] border border-white/5 hover:border-red-500/20 hover:bg-[#1b1e30] text-gray-300 hover:text-white px-4 py-2.5 rounded-xl text-xs font-semibold shadow-md active:scale-95 transition-all"
+            >
+              <FileText className="w-4 h-4 text-red-400" />
+              Export PDF
+            </a>
+          </div>
+        )}
       </div>
 
       {/* Report Parameters Form */}
       <div className="bg-[#121420] border border-white/5 rounded-2xl p-5 shadow-lg">
-        <form method="GET" action="/reports" className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <form method="GET" action="/reports" className={`grid grid-cols-1 gap-4 ${scopeProjectId ? "sm:grid-cols-3" : "sm:grid-cols-4"}`}>
           <div>
             <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">
               From Date
@@ -97,6 +109,26 @@ export default async function ReportsPage(props: PageProps) {
               className="w-full bg-[#1b1e30] border border-white/5 rounded-xl px-4 py-2.5 text-white text-xs focus:outline-none focus:border-indigo-500/50"
             />
           </div>
+
+          {!scopeProjectId && (
+            <div>
+              <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                Site
+              </label>
+              <select
+                name="project"
+                defaultValue={searchParams.project || ""}
+                className="w-full bg-[#1b1e30] border border-white/5 rounded-xl px-4 py-2.5 text-white text-xs focus:outline-none focus:border-indigo-500/50"
+              >
+                <option value="">All Sites</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.code})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div className="flex items-end">
             <button
@@ -150,6 +182,41 @@ export default async function ReportsPage(props: PageProps) {
 
       {/* Site-wise Fuel consumption analysis graph section */}
       <SiteConsumptionCharts siteData={data.siteBreakdown} />
+
+      {/* Monthly fuel issues breakdown */}
+      <div className="bg-[#121420] border border-white/5 rounded-2xl p-5 md:p-6 shadow-xl">
+        <h3 className="text-xs font-bold text-white uppercase tracking-wider mb-4 border-b border-white/5 pb-2">
+          Monthly Fuel Issues
+        </h3>
+        {data.monthlyTrend.length === 0 ? (
+          <div className="text-center py-10 text-xs text-gray-500">No issues in range.</div>
+        ) : (
+          <table className="w-full text-left text-xs border-collapse">
+            <thead>
+              <tr className="text-gray-400 font-semibold border-b border-white/5">
+                <th className="py-2.5">Month</th>
+                <th className="py-2.5">Volume</th>
+                <th className="py-2.5 text-right">Total Cost</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {data.monthlyTrend.map((mo) => {
+                const [yy, mm] = mo.month.split("-").map(Number);
+                const label = new Date(yy, mm - 1, 1).toLocaleDateString("en-US", { month: "short", year: "numeric" });
+                return (
+                  <tr key={mo.month} className="hover:bg-white/[0.01]">
+                    <td className="py-3 font-bold text-white">{label}</td>
+                    <td className="py-3 text-gray-300 font-semibold">{mo.litres.toFixed(1)} L</td>
+                    <td className="py-3 text-right font-bold text-white">
+                      Rs. {(mo.costCents / 100).toLocaleString("en-LK", { maximumFractionDigits: 0 })}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
 
       {/* Grid: Category Breakdown (Left) & Top Consumers (Right) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

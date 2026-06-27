@@ -1,6 +1,8 @@
 import React from "react";
 import { prisma } from "@/lib/db";
 import { getSession, requireUser } from "@/lib/auth";
+import { isProjectScoped } from "@/lib/rbac";
+import { isTimeLockEnabled } from "@/lib/ops";
 import QuickActions from "./components/QuickActions";
 import DashboardCharts from "./components/DashboardCharts";
 import ConditionWidget from "./components/ConditionWidget";
@@ -44,12 +46,12 @@ export default async function DashboardPage() {
     }).format(now),
     10
   );
-  const isConditionLocked = colomboHour < 8 || colomboHour >= 17;
+  const isConditionLocked = (await isTimeLockEnabled()) && (colomboHour < 8 || colomboHour >= 17);
   const lockMessage = isConditionLocked
     ? (colomboHour < 8 ? "Closed (Opens at 08:00 AM)" : "Closed (Locked at 17:00 PM)")
     : "Open (Locks at 17:00 PM)";
 
-  const isScoped = user.role === "USER" && user.projectId;
+  const isScoped = isProjectScoped(user.role) && user.projectId;
 
   // 1. Fetch KPI metrics
   const monthlyIssues = await prisma.fuelIssue.aggregate({
@@ -172,6 +174,27 @@ export default async function DashboardPage() {
     },
     orderBy: { code: "asc" },
   });
+
+  // 4b. Open breakdown events, to show "down since" in the condition widget.
+  // Best-effort: the BreakdownEvent table may not be migrated yet.
+  const openBreakdownMap: Record<string, Date> = {};
+  try {
+    const openEvents = await prisma.breakdownEvent.findMany({
+      where: {
+        resolvedAt: null,
+        ...(isScoped ? { asset: { projectId: user.projectId } } : {}),
+      },
+      select: { assetId: true, startedAt: true },
+    });
+    for (const ev of openEvents) openBreakdownMap[ev.assetId] = ev.startedAt;
+  } catch (e) {
+    // BreakdownEvent table not migrated yet — degrade gracefully.
+  }
+
+  const assetsWithBreakdown = assets.map((a) => ({
+    ...a,
+    breakdownSince: openBreakdownMap[a.id] ?? null,
+  }));
 
   // 5. Fetch recent issues
   const recentIssues = await prisma.fuelIssue.findMany({
@@ -362,7 +385,7 @@ export default async function DashboardPage() {
 
       {/* Daily Condition Logger */}
       <ConditionWidget
-        initialAssets={assets}
+        initialAssets={assetsWithBreakdown}
         isLocked={isConditionLocked}
         lockMessage={lockMessage}
       />

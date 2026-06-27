@@ -41,7 +41,8 @@ export default async function DashboardLayout({ children }: LayoutProps) {
   const isAdmin = session.role === "ADMIN";
   const isAllocator = session.role === "ALLOCATOR";
   const isWorkshop = session.role === "WORKSHOP";
- 
+  const isSitePump = session.role === "SITE_PUMP";
+
   let navItems = [
     { label: "Dashboard", href: "/", icon: LayoutDashboard },
   ];
@@ -69,6 +70,14 @@ export default async function DashboardLayout({ children }: LayoutProps) {
       { label: "Fuel Requests", href: "/fuel/requests", icon: FileText },
       { label: "Fuel Issues", href: "/fuel/issues", icon: Fuel },
       { label: "Meter Readings", href: "/readings", icon: Gauge }
+    );
+  } else if (isSitePump) {
+    navItems.push(
+      { label: "Pump Console", href: "/workshop", icon: Database },
+      { label: "Fleet Directory", href: "/fleet", icon: Car },
+      { label: "Fuel Issues", href: "/fuel/issues", icon: Fuel },
+      { label: "Meter Readings", href: "/readings", icon: Gauge },
+      { label: "Reports Console", href: "/reports", icon: FileCheck }
     );
   } else {
     // USER role
@@ -142,6 +151,14 @@ export default async function DashboardLayout({ children }: LayoutProps) {
             </div>
           </div>
           
+          <Link
+            href="/account"
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5 transition-all"
+          >
+            <Settings className="w-5 h-5" />
+            Account
+          </Link>
+
           <form action={logoutAction}>
             <button
               type="submit"

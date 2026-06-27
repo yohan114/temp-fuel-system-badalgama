@@ -37,6 +37,10 @@ model User {
 
   bulkRequests     BulkRequest[] @relation("BulkRequestedBy")
   reviewedBulk     BulkRequest[] @relation("BulkReviewedBy")
+  bulkTransfers    BulkTransfer[] @relation("TransferActor")
+
+  startedBreakdowns  BreakdownEvent[] @relation("BreakdownStartedBy")
+  resolvedBreakdowns BreakdownEvent[] @relation("BreakdownResolvedBy")
 }
 
 model Category {
@@ -76,6 +80,7 @@ model Asset {
   fuelIssues    FuelIssue[]
   meterReadings MeterReading[]
   dailyConditions DailyCondition[]
+  breakdownEvents BreakdownEvent[]
 }
 
 model FuelPrice {
@@ -234,6 +239,49 @@ model BulkTank {
   users     User[]
   requests  BulkRequest[]
   issues    FuelIssue[]   @relation("TankIssues")
+  transfersOut BulkTransfer[] @relation("TransferFrom")
+  transfersIn  BulkTransfer[] @relation("TransferTo")
+}
+
+model BulkTransfer {
+  id         String    @id @default(uuid())
+  type       String    // "REPLENISH" | "TRANSFER" | "ISSUE"
+  fuelKind   String    // "AUTO_DIESEL" | "SUPER_DIESEL"
+  litres     Float
+  note       String?
+  createdAt  DateTime  @default(now())
+
+  fromTankId String?
+  fromTank   BulkTank? @relation("TransferFrom", fields: [fromTankId], references: [id])
+
+  toTankId   String?
+  toTank     BulkTank? @relation("TransferTo", fields: [toTankId], references: [id])
+
+  actorId    String?
+  actor      User?     @relation("TransferActor", fields: [actorId], references: [id])
+
+  @@index([toTankId, createdAt])
+  @@index([fromTankId, createdAt])
+}
+
+model BreakdownEvent {
+  id           String    @id @default(uuid())
+  startedAt    DateTime  @default(now())
+  resolvedAt   DateTime?
+  note         String?
+  createdAt    DateTime  @default(now())
+
+  assetId      String
+  asset        Asset     @relation(fields: [assetId], references: [id])
+
+  startedById  String?
+  startedBy    User?     @relation("BreakdownStartedBy", fields: [startedById], references: [id])
+
+  resolvedById String?
+  resolvedBy   User?     @relation("BreakdownResolvedBy", fields: [resolvedById], references: [id])
+
+  @@index([assetId, resolvedAt])
+  @@index([startedAt])
 }
 
 model BulkRequest {
@@ -254,4 +302,8 @@ model BulkRequest {
   reviewedBy      User?     @relation("BulkReviewedBy", fields: [reviewedById], references: [id])
   reviewedAt      DateTime?
   reviewNote      String?
+
+  // Where the requester wants the fuel drawn from.
+  sourceType      String?   // "OUTSIDE" | "TANK" (null = legacy main-pump default)
+  sourceTankId    String?   // source BulkTank id when sourceType = "TANK"
 }

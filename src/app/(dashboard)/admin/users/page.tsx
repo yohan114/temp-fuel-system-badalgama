@@ -111,7 +111,8 @@ export default async function AdminUsersPage() {
                 <option value="USER">User (Add-Only Requests & Readings)</option>
                 <option value="ADMIN">Admin (Full System Controls)</option>
                 <option value="ALLOCATOR">Allocator (Project Vehicle Manager)</option>
-                <option value="WORKSHOP">Workshop Pump Operator</option>
+                <option value="WORKSHOP">Workshop Operator (Main Pump)</option>
+                <option value="SITE_PUMP">Site Pump Operator (Single Site)</option>
               </select>
             </div>
 
@@ -136,7 +137,7 @@ export default async function AdminUsersPage() {
             {/* Bulk Tank select */}
             <div>
               <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                Bulk Tank Assignment (For Workshop Role Only)
+                Bulk Tank Assignment (For Workshop / Site Pump Roles)
               </label>
               <select
                 name="bulkTankId"

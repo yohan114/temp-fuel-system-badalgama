@@ -1,7 +1,8 @@
 "use server";
 
 import { prisma } from "@/lib/db";
-import { assertCan } from "@/lib/rbac";
+import { assertCan, isProjectScoped } from "@/lib/rbac";
+import { isOutsideOperatingWindow } from "@/lib/ops";
 import { revalidatePath } from "next/cache";
 
 export async function logDailyConditionAction(assetId: string, status: string, note: string | null = null) {
@@ -16,16 +17,8 @@ export async function logDailyConditionAction(assetId: string, status: string, n
     return { error: "Invalid status value. Must be WORKING or BREAKDOWN." };
   }
 
-  // Daily logging allowed only between 8:00 AM and 17:00 PM
-  const colomboHour = parseInt(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: "Asia/Colombo",
-      hour: "numeric",
-      hour12: false,
-    }).format(new Date()),
-    10
-  );
-  if (colomboHour < 8 || colomboHour >= 17) {
+  // Daily logging is restricted to the operating-hours window (admin-configurable)
+  if (await isOutsideOperatingWindow()) {
     return { error: "Condition logging is only allowed between 8:00 AM and 17:00 PM." };
   }
 
@@ -44,7 +37,7 @@ export async function logDailyConditionAction(assetId: string, status: string, n
     }
 
     // Check project user scope
-    if (user.role === "USER" && user.projectId && asset.projectId !== user.projectId) {
+    if (isProjectScoped(user.role) && user.projectId && asset.projectId !== user.projectId) {
       return { error: "Asset does not belong to your assigned project" };
     }
 
@@ -78,6 +71,27 @@ export async function logDailyConditionAction(assetId: string, status: string, n
       },
     });
 
+    // Track continuous breakdown periods (start -> repair) for downtime reporting.
+    // Best-effort: a missing/unmigrated table must never block condition logging.
+    try {
+      const openEvent = await prisma.breakdownEvent.findFirst({
+        where: { assetId, resolvedAt: null },
+        orderBy: { startedAt: "desc" },
+      });
+      if (status === "BREAKDOWN" && !openEvent) {
+        await prisma.breakdownEvent.create({
+          data: { assetId, startedById: user.id, note },
+        });
+      } else if (status === "WORKING" && openEvent) {
+        await prisma.breakdownEvent.update({
+          where: { id: openEvent.id },
+          data: { resolvedAt: new Date(), resolvedById: user.id },
+        });
+      }
+    } catch (err: any) {
+      console.warn("Breakdown event tracking skipped:", err?.message || err);
+    }
+
     await prisma.auditLog.create({
       data: {
         actorId: user.id,
@@ -91,6 +105,7 @@ export async function logDailyConditionAction(assetId: string, status: string, n
     revalidatePath("/");
     revalidatePath("/fleet");
     revalidatePath(`/fleet/${asset.code}`);
+    revalidatePath("/admin/breakdowns");
     return { success: true };
   } catch (err: any) {
     console.error("Log daily condition error:", err);

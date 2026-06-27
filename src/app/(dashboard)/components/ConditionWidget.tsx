@@ -14,6 +14,7 @@ interface AssetConditionProp {
     status: string;
     note: string | null;
   }>;
+  breakdownSince?: string | Date | null;
 }
 
 interface ConditionWidgetProps {
@@ -55,6 +56,10 @@ export default function ConditionWidget({
                     ...a,
                     status: targetStatus === "WORKING" ? "ACTIVE" : "INACTIVE",
                     dailyConditions: [{ status: targetStatus, note: null }],
+                    breakdownSince:
+                      targetStatus === "BREAKDOWN"
+                        ? a.breakdownSince ?? new Date().toISOString()
+                        : null,
                   }
                 : a
             )
@@ -67,10 +72,34 @@ export default function ConditionWidget({
     });
   };
 
-  const filteredAssets = assets.filter((a) =>
-    a.code.toLowerCase().includes(search.toLowerCase()) ||
-    a.regNo?.toLowerCase().includes(search.toLowerCase())
-  );
+  const getCondition = (a: AssetConditionProp) => {
+    const entry = a.dailyConditions[0];
+    return entry ? entry.status : a.status === "ACTIVE" ? "WORKING" : "BREAKDOWN";
+  };
+
+  const formatSince = (d: string | Date | null | undefined) => {
+    if (!d) return null;
+    return new Date(d).toLocaleString("en-US", {
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  // Breakdown vehicles are surfaced first so they are easy to action.
+  const filteredAssets = assets
+    .filter(
+      (a) =>
+        a.code.toLowerCase().includes(search.toLowerCase()) ||
+        a.regNo?.toLowerCase().includes(search.toLowerCase())
+    )
+    .sort((a, b) => {
+      const rankA = getCondition(a) === "BREAKDOWN" ? 0 : 1;
+      const rankB = getCondition(b) === "BREAKDOWN" ? 0 : 1;
+      if (rankA !== rankB) return rankA - rankB;
+      return a.code.localeCompare(b.code);
+    });
 
   return (
     <div className="bg-[#121420] border border-white/5 rounded-2xl p-6 shadow-lg space-y-4">
@@ -159,6 +188,14 @@ export default function ConditionWidget({
                         </>
                       )}
                     </span>
+                    {currentCondition === "BREAKDOWN" && asset.breakdownSince && (
+                      <>
+                        <span>•</span>
+                        <span className="text-red-400/80 font-semibold">
+                          Down since {formatSince(asset.breakdownSince)}
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
 

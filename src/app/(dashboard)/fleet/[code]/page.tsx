@@ -1,6 +1,7 @@
 import React from "react";
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/auth";
+import { scopedProjectId } from "@/lib/rbac";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import AssetCharts from "./components/AssetCharts";
@@ -44,7 +45,8 @@ export default async function AssetDetailPage(props: PageProps) {
   }
 
   // Check project user scope
-  if (session.role === "USER" && session.projectId && asset.projectId !== session.projectId) {
+  const scopeProjectId = scopedProjectId(session);
+  if (scopeProjectId && asset.projectId !== scopeProjectId) {
     notFound();
   }
 
