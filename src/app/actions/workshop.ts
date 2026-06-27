@@ -179,6 +179,21 @@ export async function submitBulkRequestAction(formData: FormData) {
     return { error: "Requested litres must be greater than zero" };
   }
 
+  // Parse the requested fuel source: "OUTSIDE", "tank:<id>" (a pump/site), or
+  // empty (legacy main-pump default handled at approval time).
+  const sourceRaw = formData.get("source")?.toString() || "";
+  let sourceType: string | null = null;
+  let sourceTankId: string | null = null;
+  if (sourceRaw.startsWith("tank:")) {
+    sourceType = "TANK";
+    sourceTankId = sourceRaw.slice(5) || null;
+    if (sourceTankId === bulkTankId) {
+      return { error: "Source and destination tanks cannot be the same." };
+    }
+  } else if (sourceRaw === "OUTSIDE") {
+    sourceType = "OUTSIDE";
+  }
+
   try {
     const tank = await prisma.bulkTank.findUnique({
       where: { id: bulkTankId },
@@ -194,6 +209,8 @@ export async function submitBulkRequestAction(formData: FormData) {
         requestedLitres,
         requestedById: user.id,
         status: "PENDING",
+        sourceType,
+        sourceTankId,
       },
     });
 
@@ -250,8 +267,62 @@ export async function approveBulkRequestAction(requestId: string, reviewNote: st
         },
       });
 
+      // Honour the source the requester selected, if any.
+      if (req.sourceTankId) {
+        const sourceTank = await tx.bulkTank.findUnique({ where: { id: req.sourceTankId } });
+        if (!sourceTank) {
+          throw new Error("The selected source pump no longer exists.");
+        }
+        if (sourceTank.id === req.bulkTankId) {
+          throw new Error("The source and destination tanks are the same.");
+        }
+        if (sourceTank.balance < req.requestedLitres) {
+          throw new Error(`Insufficient fuel in ${sourceTank.name}. Available: ${sourceTank.balance.toFixed(1)}L, requested: ${req.requestedLitres}L.`);
+        }
+        await tx.bulkTank.update({ where: { id: sourceTank.id }, data: { balance: { decrement: req.requestedLitres } } });
+        await tx.bulkTank.update({ where: { id: req.bulkTankId }, data: { balance: { increment: req.requestedLitres } } });
+        await tx.auditLog.create({
+          data: {
+            actorId: admin.id,
+            action: "APPROVE",
+            entity: "BulkRequest",
+            entityId: requestId,
+            summary: `Approved transfer of ${req.requestedLitres}L from "${sourceTank.name}" to "${req.bulkTank.name}"`,
+          },
+        });
+        return {
+          type: "TRANSFER",
+          fuelKind: req.fuelKind,
+          litres: req.requestedLitres,
+          fromTankId: sourceTank.id as string | null,
+          toTankId: req.bulkTankId as string | null,
+          note: `Transfer from ${sourceTank.name}`,
+        };
+      }
+
+      if (req.sourceType === "OUTSIDE") {
+        await tx.bulkTank.update({ where: { id: req.bulkTankId }, data: { balance: { increment: req.requestedLitres } } });
+        await tx.auditLog.create({
+          data: {
+            actorId: admin.id,
+            action: "APPROVE",
+            entity: "BulkRequest",
+            entityId: requestId,
+            summary: `Approved external delivery of ${req.requestedLitres}L to "${req.bulkTank.name}"`,
+          },
+        });
+        return {
+          type: "REPLENISH",
+          fuelKind: req.fuelKind,
+          litres: req.requestedLitres,
+          fromTankId: null as string | null,
+          toTankId: req.bulkTankId as string | null,
+          note: "External / outside delivery",
+        };
+      }
+
       // Check if target is the main pump (Badalgama Main pump)
-      const isMainPump = req.bulkTank.name.toLowerCase().includes("badalgama") && 
+      const isMainPump = req.bulkTank.name.toLowerCase().includes("badalgama") &&
                          req.bulkTank.name.toLowerCase().includes("main");
 
       if (isMainPump) {

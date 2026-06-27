@@ -11,6 +11,7 @@ interface RequestProp {
   createdAt: string | Date;
   bulkTank: { name: string };
   requestedBy: { name: string };
+  sourceLabel?: string;
 }
 
 export default function PendingApprovalsClient({ initialRequests }: { initialRequests: RequestProp[] }) {
@@ -76,6 +77,11 @@ export default function PendingApprovalsClient({ initialRequests }: { initialReq
                 <p className="text-[10px] text-gray-500 mt-1">
                   Requested by {req.requestedBy.name} • {new Date(req.createdAt).toLocaleString()}
                 </p>
+                {req.sourceLabel && (
+                  <p className="text-[10px] text-indigo-300 mt-1 font-semibold">
+                    Source: {req.sourceLabel}
+                  </p>
+                )}
                 <p className="text-white font-bold mt-2 text-md">
                   Request Quantity: {req.requestedLitres.toLocaleString()} L
                 </p>

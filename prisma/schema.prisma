@@ -302,4 +302,8 @@ model BulkRequest {
   reviewedBy      User?     @relation("BulkReviewedBy", fields: [reviewedById], references: [id])
   reviewedAt      DateTime?
   reviewNote      String?
+
+  // Where the requester wants the fuel drawn from.
+  sourceType      String?   // "OUTSIDE" | "TANK" (null = legacy main-pump default)
+  sourceTankId    String?   // source BulkTank id when sourceType = "TANK"
 }

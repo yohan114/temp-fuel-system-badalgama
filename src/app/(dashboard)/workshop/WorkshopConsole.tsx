@@ -503,6 +503,30 @@ export default function WorkshopConsole({
 
               <div>
                 <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                  Request Fuel From
+                </label>
+                <select
+                  name="source"
+                  required
+                  defaultValue="OUTSIDE"
+                  className="w-full bg-[#1b1e30] border border-white/5 rounded-xl px-3 py-2.5 text-white text-xs focus:outline-none focus:border-indigo-500/50 font-semibold"
+                >
+                  <option value="OUTSIDE">Outside / Supplier (external delivery)</option>
+                  {allTanks
+                    .filter((t) => t.id !== activeTank.id && t.fuelKind === activeTank.fuelKind)
+                    .map((t) => (
+                      <option key={t.id} value={`tank:${t.id}`}>
+                        {t.name} ({t.balance.toLocaleString(undefined, { maximumFractionDigits: 0 })}L available)
+                      </option>
+                    ))}
+                </select>
+                <p className="text-[9px] text-gray-500 mt-1.5">
+                  Choose the Workshop main pump, another active site pump, or an outside supplier.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">
                   Replenishment Litres
                 </label>
                 <input

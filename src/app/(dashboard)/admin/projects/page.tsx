@@ -58,6 +58,18 @@ export default async function AdminProjectsPage() {
     orderBy: { createdAt: "desc" },
   });
 
+  // Resolve a human-readable source label for each pending request.
+  const tankNameById: Record<string, string> = {};
+  for (const t of bulkTanks) tankNameById[t.id] = t.name;
+  const pendingWithSource = pendingRequests.map((r) => ({
+    ...r,
+    sourceLabel: r.sourceTankId
+      ? tankNameById[r.sourceTankId] || "Unknown pump"
+      : r.sourceType === "OUTSIDE"
+      ? "Outside / Supplier"
+      : "Main pump (default)",
+  }));
+
   return (
     <div className="space-y-12">
       
@@ -135,7 +147,7 @@ export default async function AdminProjectsPage() {
         </div>
 
         {/* Pending Replenishment Approvals Panel */}
-        <PendingApprovalsClient initialRequests={pendingRequests as any} />
+        <PendingApprovalsClient initialRequests={pendingWithSource as any} />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           
