@@ -2,9 +2,23 @@ import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { prisma } from "./db";
 
-const SECRET = new TextEncoder().encode(
-  process.env.AUTH_SECRET || "default_auth_secret_must_be_changed_in_env_file"
-);
+const DEFAULT_SECRET = "default_auth_secret_must_be_changed_in_env_file";
+const AUTH_SECRET = process.env.AUTH_SECRET;
+
+// Fail closed in production: a missing or default secret makes every session forgeable.
+if (process.env.NODE_ENV === "production" && (!AUTH_SECRET || AUTH_SECRET === DEFAULT_SECRET)) {
+  throw new Error(
+    "AUTH_SECRET must be set to a strong, unique value in production (generate one with `openssl rand -base64 32`). Refusing to start with the insecure default."
+  );
+}
+
+if (!AUTH_SECRET) {
+  console.warn(
+    "[auth] AUTH_SECRET is not set — using an insecure development fallback. Set AUTH_SECRET in your environment."
+  );
+}
+
+const SECRET = new TextEncoder().encode(AUTH_SECRET || DEFAULT_SECRET);
 const COOKIE_NAME = "session";
 
 export interface SessionPayload {

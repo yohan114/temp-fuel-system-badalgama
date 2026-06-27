@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache";
 import fs from "fs";
 import path from "path";
 import Database from "better-sqlite3";
+import { uploadBackupOffsite } from "@/lib/backup-offsite";
 
 const VALID_ROLES = ["ADMIN", "USER", "ALLOCATOR", "WORKSHOP", "SITE_PUMP"];
 
@@ -223,7 +224,7 @@ export async function runOnDemandBackupAction() {
   }
 
   const dbPath = path.join(process.cwd(), "data", "app.db");
-  const backupDir = path.join(process.cwd(), "backups");
+  const backupDir = process.env.BACKUP_DIR || path.join(process.cwd(), "backups");
 
   if (!fs.existsSync(dbPath)) {
     return { error: "Database file 'data/app.db' does not exist" };
@@ -271,17 +272,22 @@ export async function runOnDemandBackupAction() {
       }
     });
 
+    // Push the fresh backup off-site (no-op unless BACKUP_REMOTE is configured)
+    const offsite = await uploadBackupOffsite(backupPath);
+
     await prisma.auditLog.create({
       data: {
         actorId: admin.id,
         action: "BACKUP",
         entity: "Database",
-        summary: `Manually triggered backup successful: ${backupFilename}. Rotated ${deletedCount} files.`,
+        summary: `Manually triggered backup successful: ${backupFilename}. Rotated ${deletedCount} files.${
+          offsite.attempted ? ` Off-site: ${offsite.success ? "uploaded" : "FAILED — " + offsite.message}` : ""
+        }`,
       },
     });
 
     revalidatePath("/admin/backups");
-    return { success: true, filename: backupFilename };
+    return { success: true, filename: backupFilename, offsite };
   } catch (err: any) {
     console.error("Manual backup error:", err);
     return { error: err.message || "Failed to complete database backup" };

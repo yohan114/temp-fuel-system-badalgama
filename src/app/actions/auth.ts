@@ -1,6 +1,6 @@
 "use server";
 
-import { createSession, deleteSession } from "@/lib/auth";
+import { createSession, deleteSession, requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import bcrypt from "bcryptjs";
 import { redirect } from "next/navigation";
@@ -52,4 +52,56 @@ export async function loginAction(prevState: any, formData: FormData) {
 export async function logoutAction() {
   await deleteSession();
   redirect("/login");
+}
+
+export async function changePasswordAction(formData: FormData) {
+  let user;
+  try {
+    user = await requireUser();
+  } catch {
+    return { error: "You must be signed in to change your password." };
+  }
+
+  const currentPassword = formData.get("currentPassword")?.toString() || "";
+  const newPassword = formData.get("newPassword")?.toString() || "";
+  const confirmPassword = formData.get("confirmPassword")?.toString() || "";
+
+  if (!currentPassword || !newPassword || !confirmPassword) {
+    return { error: "Please fill in all fields." };
+  }
+  if (newPassword.length < 8) {
+    return { error: "New password must be at least 8 characters long." };
+  }
+  if (newPassword !== confirmPassword) {
+    return { error: "New password and confirmation do not match." };
+  }
+  if (newPassword === currentPassword) {
+    return { error: "New password must be different from your current password." };
+  }
+
+  if (!bcrypt.compareSync(currentPassword, user.passwordHash)) {
+    return { error: "Your current password is incorrect." };
+  }
+
+  try {
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash: bcrypt.hashSync(newPassword, 10) },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: user.id,
+        action: "UPDATE",
+        entity: "User",
+        entityId: user.id,
+        summary: `User ${user.username} changed their own password`,
+      },
+    });
+
+    return { success: true };
+  } catch (err: any) {
+    console.error("Change password error:", err);
+    return { error: "Failed to update password. Please try again." };
+  }
 }

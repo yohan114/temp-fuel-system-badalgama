@@ -121,14 +121,23 @@ Add the following content:
 # Database Path (SQLite separated from git directory)
 DATABASE_URL="file:/var/lib/fuel-system/app.db"
 
-# JWT Authentication Secret (Run 'openssl rand -base64 32' to generate a secure secret)
+# JWT Authentication Secret — REQUIRED in production. The app refuses to start
+# without a strong, unique value. Generate one with: openssl rand -base64 32
 AUTH_SECRET="your-generated-secure-secret-here"
 
 # Cron Endpoint Secret (Run 'openssl rand -base64 32' to generate a secure secret)
 CRON_SECRET="your-generated-cron-secret-here"
 
-# Seed Admin Password
-SEED_ADMIN_PASSWORD="Gunaya@23254"
+# Seed Admin Password (optional) — used only when the "admin" account is first created.
+# If omitted, the seed generates a random password and prints it once to the console.
+# Do NOT commit a real password to git; rotate it in-app via My Account after first login.
+SEED_ADMIN_PASSWORD="choose-a-strong-password"
+
+# Off-site backups (optional). When BACKUP_REMOTE is set, each backup is uploaded via
+# rclone (https://rclone.org) after it is written locally. Run `rclone config` first.
+#   BACKUP_REMOTE="gdrive:fuel-backups"        # any rclone remote (Drive, S3, B2, ...)
+#   BACKUP_DIR="/var/lib/fuel-system/backups"  # optional: override local backup dir
+#   BACKUP_RCLONE_BIN="/usr/bin/rclone"        # optional: path to the rclone binary
 ```
 
 ### 3. Initialize the Database File
@@ -186,3 +195,15 @@ pm2 restart fuel-system
 * **Restart the server**: `pm2 restart fuel-system`
 * **View real-time application logs**: `pm2 logs fuel-system`
 * **Stop the application**: `pm2 stop fuel-system`
+
+### Off-site backups (optional but recommended)
+Local backups live next to the database on the same VPS, so a disk failure loses both.
+To copy each backup off-site, install and configure [rclone](https://rclone.org):
+```bash
+sudo apt install -y rclone        # or: curl https://rclone.org/install.sh | sudo bash
+rclone config                     # set up a remote, e.g. "gdrive" or an S3 bucket
+```
+Then set `BACKUP_REMOTE` (and optionally `BACKUP_DIR` / `BACKUP_RCLONE_BIN`) in `.env`
+and restart. Every backup — whether triggered from the Admin → Database Backups page or
+the scheduled `scripts/backup.ts` job — is then uploaded to the remote automatically. The
+upload never blocks or fails the local backup; its outcome is recorded in the audit log.

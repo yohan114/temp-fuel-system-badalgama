@@ -4,6 +4,7 @@ import * as XLSX from "xlsx";
 import bcrypt from "bcryptjs";
 import path from "path";
 import fs from "fs";
+import { randomBytes } from "crypto";
 
 const adapter = new PrismaBetterSqlite3({
   url: process.env.DATABASE_URL || "file:./data/app.db",
@@ -100,25 +101,34 @@ async function main() {
   });
   categoryDbIds["OTHER"] = fallbackCat.id;
 
-  // 2. Seed Default Admin
+  // 2. Seed Default Admin.
+  // The password is only set when the admin is first created; reseeding never
+  // overwrites an existing admin's (possibly already-rotated) password.
   console.log("Seeding default admin user...");
-  const adminPassword = process.env.SEED_ADMIN_PASSWORD || "Gunaya@23254";
-  const passwordHash = bcrypt.hashSync(adminPassword, 10);
+  const existingAdmin = await prisma.user.findUnique({ where: { username: "admin" } });
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD || randomBytes(9).toString("base64url");
   const adminUser = await prisma.user.upsert({
     where: { username: "admin" },
     update: {
-      passwordHash,
       role: "ADMIN",
       name: "Administrator",
     },
     create: {
       username: "admin",
       name: "Administrator",
-      passwordHash,
+      passwordHash: bcrypt.hashSync(adminPassword, 10),
       role: "ADMIN",
       active: true,
     },
   });
+  if (!existingAdmin && !process.env.SEED_ADMIN_PASSWORD) {
+    console.log("\n========================================================");
+    console.log("  Generated admin credentials (no SEED_ADMIN_PASSWORD set):");
+    console.log("    username: admin");
+    console.log(`    password: ${adminPassword}`);
+    console.log("  Save this now and change it after first login.");
+    console.log("========================================================\n");
+  }
 
   // 3. Seed Default Fuel Prices (Effective 2026-05-30)
   // Prices in cents (LKR * 100)

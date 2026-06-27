@@ -151,6 +151,14 @@ export default async function DashboardLayout({ children }: LayoutProps) {
             </div>
           </div>
           
+          <Link
+            href="/account"
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5 transition-all"
+          >
+            <Settings className="w-5 h-5" />
+            Account
+          </Link>
+
           <form action={logoutAction}>
             <button
               type="submit"
