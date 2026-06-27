@@ -185,10 +185,16 @@ cd /var/www/fuel-system
 git pull
 npm install
 npx prisma generate
+npx prisma db push
 npm run build
 pm2 restart fuel-system
 ```
 *Note: Because our database is safely saved in `/var/lib/fuel-system/app.db` outside the git directory, updates will never overwrite or conflict with your active production database.*
+
+> **Important:** Always run `npx prisma db push` on update (not just `prisma generate`). `generate`
+> only rebuilds the client code; `db push` applies any new tables/columns to the live SQLite
+> database. Skipping it leaves the client expecting tables that don't exist yet — which is what
+> caused replenishment approvals to fail after the tank-ledger update.
 
 ### Managing PM2 Processes
 * **View running processes**: `pm2 status`

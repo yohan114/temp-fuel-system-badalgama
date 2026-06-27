@@ -6,6 +6,25 @@ import { revalidatePath } from "next/cache";
 import { getPriceForDate } from "@/lib/pricing";
 import { isOutsideOperatingWindow } from "@/lib/ops";
 
+// Best-effort tank-movement ledger write. The BulkTransfer ledger is supplementary
+// audit data, so a failure here (e.g. the table not yet created on a deployment that
+// skipped `prisma db push`) must never break or roll back the fuel operation.
+async function recordBulkTransfer(data: {
+  type: string;
+  fuelKind: string;
+  litres: number;
+  fromTankId?: string | null;
+  toTankId?: string | null;
+  actorId?: string | null;
+  note?: string | null;
+}) {
+  try {
+    await prisma.bulkTransfer.create({ data });
+  } catch (err: any) {
+    console.warn("BulkTransfer ledger write skipped:", err?.message || err);
+  }
+}
+
 // 1. Create Bulk Tank (Admin only)
 export async function createBulkTankAction(formData: FormData) {
   let admin;
@@ -219,7 +238,7 @@ export async function approveBulkRequestAction(requestId: string, reviewNote: st
       return { error: "Request has already been processed" };
     }
 
-    await prisma.$transaction(async (tx) => {
+    const ledger = await prisma.$transaction(async (tx) => {
       // 1. Set request status to APPROVED
       await tx.bulkRequest.update({
         where: { id: requestId },
@@ -246,17 +265,6 @@ export async function approveBulkRequestAction(requestId: string, reviewNote: st
           },
         });
 
-        await tx.bulkTransfer.create({
-          data: {
-            type: "REPLENISH",
-            fuelKind: req.fuelKind,
-            litres: req.requestedLitres,
-            toTankId: req.bulkTankId,
-            actorId: admin.id,
-            note: "Bulk delivery to main pump",
-          },
-        });
-
         await tx.auditLog.create({
           data: {
             actorId: admin.id,
@@ -266,6 +274,15 @@ export async function approveBulkRequestAction(requestId: string, reviewNote: st
             summary: `Approved bulk delivery of ${req.requestedLitres}L to Main Pump "${req.bulkTank.name}"`,
           },
         });
+
+        return {
+          type: "REPLENISH",
+          fuelKind: req.fuelKind,
+          litres: req.requestedLitres,
+          fromTankId: null as string | null,
+          toTankId: req.bulkTankId as string | null,
+          note: "Bulk delivery to main pump",
+        };
       } else {
         // Site tank refuel: draw from the Badalgama Main pump for the same fuel kind
         const allTanks = await tx.bulkTank.findMany();
@@ -303,18 +320,6 @@ export async function approveBulkRequestAction(requestId: string, reviewNote: st
           },
         });
 
-        await tx.bulkTransfer.create({
-          data: {
-            type: "TRANSFER",
-            fuelKind: req.fuelKind,
-            litres: req.requestedLitres,
-            fromTankId: mainPump.id,
-            toTankId: req.bulkTankId,
-            actorId: admin.id,
-            note: "Replenishment transfer to site tank",
-          },
-        });
-
         await tx.auditLog.create({
           data: {
             actorId: admin.id,
@@ -324,12 +329,25 @@ export async function approveBulkRequestAction(requestId: string, reviewNote: st
             summary: `Approved bulk fuel transfer of ${req.requestedLitres}L from "${mainPump.name}" to "${req.bulkTank.name}"`,
           },
         });
+
+        return {
+          type: "TRANSFER",
+          fuelKind: req.fuelKind,
+          litres: req.requestedLitres,
+          fromTankId: mainPump.id as string | null,
+          toTankId: req.bulkTankId as string | null,
+          note: "Replenishment transfer to site tank",
+        };
       }
     });
+
+    // Best-effort ledger write — must never block or roll back the approval.
+    await recordBulkTransfer({ ...ledger, actorId: admin.id });
 
     try {
       revalidatePath("/admin/projects");
       revalidatePath("/workshop");
+      revalidatePath("/admin/sites");
     } catch (e) {
       // Ignore Next.js runtime static generation store errors in CLI tests
     }
@@ -613,19 +631,7 @@ export async function workshopIssueFuelAction(formData: FormData) {
         });
       }
 
-      // D. Record the draw in the tank movement ledger
-      await tx.bulkTransfer.create({
-        data: {
-          type: "ISSUE",
-          fuelKind: tank.fuelKind,
-          litres,
-          fromTankId: tank.id,
-          actorId: user.id,
-          note: `Issued to ${asset.code}`,
-        },
-      });
-
-      // E. Log audit
+      // D. Log audit
       await tx.auditLog.create({
         data: {
           actorId: user.id,
@@ -635,6 +641,16 @@ export async function workshopIssueFuelAction(formData: FormData) {
           summary: `Pump issued ${litres}L of ${tank.fuelKind} to ${asset.code} (Deducted from ${tank.name})`,
         },
       });
+    });
+
+    // Best-effort tank-movement ledger (never blocks the issue)
+    await recordBulkTransfer({
+      type: "ISSUE",
+      fuelKind: tank.fuelKind,
+      litres,
+      fromTankId: tank.id,
+      actorId: user.id,
+      note: `Issued to ${asset.code}`,
     });
 
     revalidatePath("/workshop");
@@ -734,17 +750,6 @@ export async function dispatchToSiteTankAction(formData: FormData) {
         where: { id: destTank.id },
         data: { balance: { increment: litres } },
       });
-      await tx.bulkTransfer.create({
-        data: {
-          type: "TRANSFER",
-          fuelKind: source.fuelKind,
-          litres,
-          fromTankId: source.id,
-          toTankId: destTank.id,
-          actorId: user.id,
-          note,
-        },
-      });
       await tx.auditLog.create({
         data: {
           actorId: user.id,
@@ -753,6 +758,17 @@ export async function dispatchToSiteTankAction(formData: FormData) {
           summary: `Dispatched ${litres}L of ${source.fuelKind} from "${source.name}" into site tank "${destTank.name}"`,
         },
       });
+    });
+
+    // Best-effort tank-movement ledger (never blocks the dispatch)
+    await recordBulkTransfer({
+      type: "TRANSFER",
+      fuelKind: source.fuelKind,
+      litres,
+      fromTankId: source.id,
+      toTankId: destTank.id,
+      actorId: user.id,
+      note,
     });
 
     revalidatePath("/workshop");
